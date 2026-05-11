@@ -24,7 +24,7 @@ public:
 
     HWND MainWindow() const;
     void LayoutControls();
-    bool SetStatusMessage(_In_z_ WCHAR* message, DWORD showTimeMsec, bool force);
+    bool SetStatusMessage(_In_z_ const WCHAR* message, DWORD showTimeMsec, bool force);
     HRESULT Update(
         INT64 frameTime,
         ICoordinateMapper* coordinateMapper,

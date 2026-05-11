@@ -1,10 +1,11 @@
 BUILD_DIR := build
 TEMP_DIR := temp
-CMAKE := cmake
+POWERSHELL := powershell
+VSWHERE := C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe
+CMAKE := $(shell "$(POWERSHELL)" -NoProfile -Command "$$paths = @('C:\Program Files\CMake\bin\cmake.exe'); $$vsCMake = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -Filter cmake.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $$_.FullName -like '*CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' } | Select-Object -First 1 -ExpandProperty FullName; if ($$vsCMake) { $$paths += $$vsCMake }; $$paths | Where-Object { Test-Path $$_ } | Select-Object -First 1")
 CONFIG ?= Debug
-GENERATOR ?= NMake Makefiles
+GENERATOR ?= $(shell "$(POWERSHELL)" -NoProfile -Command "if (Test-Path '$(VSWHERE)') { $$instance = & '$(VSWHERE)' -all -format json | ConvertFrom-Json | Where-Object { $$_.isComplete -and $$_.isLaunchable } | Select-Object -First 1; if ($$instance) { $$year = [regex]::Match($$instance.displayName, '20\d{2}').Value; if ($$year) { 'Visual Studio ' + $$instance.catalog.productLineVersion + ' ' + $$year } } }")
 PLATFORM ?= x64
-VSDEVCMD ?= C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat
 TARGET_EXE := tracking.exe
 PYTHON ?= python
 PREPROCESS_SCRIPT := preprocess.py
@@ -13,17 +14,21 @@ MODEL_SCRIPT := model.py
 EVALUATE_SCRIPT := evaluate.py
 INDEX ?= 0
 
+ifdef GENERATOR
+ifneq ($(strip $(GENERATOR)),)
+CMAKE_GENERATOR_ARG := -G "$(GENERATOR)"
+endif
+endif
+
+ifdef PLATFORM
+ifneq ($(strip $(PLATFORM)),)
+CMAKE_PLATFORM_ARG := -A $(PLATFORM)
+endif
+endif
+
 # Avoid passing GNU make flags from mingw32-make into NMake through CMake.
 unexport MAKEFLAGS
 unexport MFLAGS
-
-ifeq ($(PLATFORM),x64)
-VS_ARCH := amd64
-else ifeq ($(PLATFORM),Win32)
-VS_ARCH := x86
-else
-VS_ARCH := $(PLATFORM)
-endif
 
 .PHONY: help all configure build rebuild clean run-app run-preprocess run-visualize run-model run-evaluate
 
@@ -41,16 +46,24 @@ help:
 	@echo Variables:
 	@echo   INDEX=0                 Override input index, for example: make run-model INDEX=3
 	@echo   CONFIG=Debug            Build config
-	@echo   PLATFORM=x64            Visual Studio platform
+	@echo   GENERATOR=...           Optional generator override, defaults to installed Visual Studio
+	@echo   PLATFORM=x64            Generator platform, default: x64
+	@echo.
+	@echo Examples:
+	@echo   mingw32-make build
+	@echo   mingw32-make build GENERATOR="Visual Studio 18 2026" PLATFORM=x64
+	@echo   mingw32-make build GENERATOR=Ninja
 
 all: help
 
 configure:
+	@if "$(CMAKE)"=="" (echo Could not find a Windows-native cmake.exe. Install CMake for Windows or Visual Studio CMake tools.& exit /b 1)
+	@if "$(GENERATOR)"=="" (echo Could not detect an installed Visual Studio generator. Set GENERATOR explicitly or install Visual Studio.& exit /b 1)
 	@if not exist "$(TEMP_DIR)" mkdir "$(TEMP_DIR)"
-	cmd.exe /c call "$(VSDEVCMD)" -arch=$(VS_ARCH) "&&" $(CMAKE) -S . -B $(TEMP_DIR) -G "$(GENERATOR)"
+	$(CMAKE) -S . -B $(TEMP_DIR) $(CMAKE_GENERATOR_ARG) $(CMAKE_PLATFORM_ARG)
 
 build: configure
-	cmd.exe /c call "$(VSDEVCMD)" -arch=$(VS_ARCH) "&&" $(CMAKE) --build $(TEMP_DIR) --config $(CONFIG)
+	$(CMAKE) --build $(TEMP_DIR) --config $(CONFIG)
 	@if exist "$(TEMP_DIR)" rmdir /S /Q "$(TEMP_DIR)"
 
 rebuild: clean build

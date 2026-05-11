@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <algorithm>
 #include <strsafe.h>
 #include "BodyBasics.h"
 #include "tracking_renderer.h"
@@ -130,7 +131,7 @@ void TrackingRenderer::LayoutControls()
 
     const int width = clientRect.right - clientRect.left;
     const int height = clientRect.bottom - clientRect.top;
-    const int videoHeight = max(0, height - c_StatusHeight);
+    const int videoHeight = std::max(0, height - c_StatusHeight);
 
     if (m_hWndVideoView)
     {
@@ -139,11 +140,11 @@ void TrackingRenderer::LayoutControls()
 
     if (m_hWndStatus)
     {
-        MoveWindow(m_hWndStatus, 0, videoHeight, width, min(c_StatusHeight, height), TRUE);
+        MoveWindow(m_hWndStatus, 0, videoHeight, width, std::min(c_StatusHeight, height), TRUE);
     }
 }
 
-bool TrackingRenderer::SetStatusMessage(_In_z_ WCHAR* message, DWORD showTimeMsec, bool force)
+bool TrackingRenderer::SetStatusMessage(_In_z_ const WCHAR* message, DWORD showTimeMsec, bool force)
 {
     static INT64 nextStatusTime = 0;
     INT64 now = GetTickCount64();

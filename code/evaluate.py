@@ -9,6 +9,7 @@ from preprocess import (
     load_recording,
     normalize_root_visibility,
     reconstruct_frames_from_csv,
+    resolve_existing_limb_lengths_path,
     resample_frames,
 )
 
@@ -87,6 +88,7 @@ def evaluate_pose(ground_truth_frames: list[dict], prediction_frames: list[dict]
 def main() -> int:
     script_directory = Path(__file__).resolve().parent
     data_directory = script_directory / "data"
+    processed_directory = data_directory / "recordings" / "processed"
 
     parser = argparse.ArgumentParser(description="Evaluate predicted pose quaternions against raw skeletal ground truth.")
     parser.add_argument("sample_id", nargs="?", default="0", help="Numeric sample id, e.g. 0 or 1.")
@@ -94,7 +96,7 @@ def main() -> int:
 
     raw_path = data_directory / "recordings" / "raw" / f"recording_{args.sample_id}.bin"
     prediction_path = data_directory / "predictions" / f"prediction_{args.sample_id}.csv"
-    limb_lengths_path = data_directory / f"limb_lengths_{args.sample_id}.csv"
+    limb_lengths_path = resolve_existing_limb_lengths_path(raw_path, processed_directory)
 
     ground_truth_frames = load_raw_ground_truth_frames(raw_path)
     prediction_frames = reconstruct_frames_from_csv(prediction_path, limb_lengths_path)

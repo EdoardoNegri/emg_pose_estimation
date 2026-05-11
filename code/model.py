@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import csv
 import json
@@ -5,9 +7,20 @@ import math
 import random
 from pathlib import Path
 
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, Dataset
+# This module currently serves two roles:
+# 1) create a baseline prediction by perturbing/clamping processed quaternions
+# 2) provide an optional PyTorch sequence model for later training experiments
+try:
+    import torch
+    from torch import nn
+    from torch.utils.data import DataLoader, Dataset
+except ModuleNotFoundError:
+    torch = None
+    nn = None
+    DataLoader = None
+
+    class Dataset:
+        pass
 
 
 JOINT_IDS = tuple(range(25))
@@ -78,6 +91,8 @@ def clamp_quaternion_angle(quaternion: dict[str, float], max_angle_degrees: floa
 
 
 def load_joint_limits(path: Path) -> tuple[float, dict[str, float]]:
+    # Joint limits are keyed by chain name so prediction generation can clamp
+    # each limb relation differently.
     if not path.exists():
         return DEFAULT_MAX_ANGLE_DEGREES, {}
 
@@ -165,6 +180,8 @@ def create_baseline_prediction(
     noise_std: float,
     seed: int | None,
 ) -> Path:
+    # The non-training path is deliberately simple: start from processed pose
+    # targets, optionally add noise, then clamp to plausible joint ranges.
     processed_path = processed_dir / f"processed_{sample_id}.csv"
     if not processed_path.exists():
         raise FileNotFoundError(
@@ -195,7 +212,18 @@ def create_baseline_prediction(
     return prediction_path
 
 
-def frame_to_tensor(frame: dict) -> torch.Tensor:
+def require_torch() -> None:
+    if torch is None or nn is None or DataLoader is None:
+        raise ModuleNotFoundError(
+            "PyTorch is required only for training. Install it before using --train, "
+            "or run model.py without --train to create baseline predictions."
+        )
+
+
+def frame_to_tensor(frame: dict) -> "torch.Tensor":
+    # Flatten centered joints into a dense feature vector suitable for the
+    # simple sequence model below.
+    require_torch()
     values: list[float] = []
     joints = frame["joints_centered"]
     for joint_id in JOINT_IDS:
@@ -206,6 +234,8 @@ def frame_to_tensor(frame: dict) -> torch.Tensor:
 
 class PoseSequenceDataset(Dataset):
     def __init__(self, predictions_dir: Path, processed_dir: Path, window_size: int) -> None:
+        # Training samples are sliding windows of predicted pose -> target pose.
+        require_torch()
         self.samples: list[tuple[torch.Tensor, torch.Tensor]] = []
         self.window_size = window_size
 
@@ -239,24 +269,29 @@ class PoseSequenceDataset(Dataset):
         return self.samples[index]
 
 
-class PoseCorrectionModel(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int, num_layers: int) -> None:
-        super().__init__()
-        self.encoder = nn.GRU(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-        )
-        self.head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, input_size),
-        )
+if nn is not None:
+    class PoseCorrectionModel(nn.Module):
+        def __init__(self, input_size: int, hidden_size: int, num_layers: int) -> None:
+            super().__init__()
+            # A small GRU baseline is enough for experimentation before wiring in
+            # real EMG features.
+            self.encoder = nn.GRU(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                batch_first=True,
+            )
+            self.head = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, input_size),
+            )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        encoded, _ = self.encoder(x)
-        return self.head(encoded)
+        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            encoded, _ = self.encoder(x)
+            return self.head(encoded)
+else:
+    PoseCorrectionModel = None
 
 
 def train_model(
@@ -270,6 +305,9 @@ def train_model(
     epochs: int,
     learning_rate: float,
 ) -> None:
+    # Training is optional and intentionally decoupled from the baseline
+    # prediction path so the rest of the pipeline works without PyTorch.
+    require_torch()
     dataset = PoseSequenceDataset(predictions_dir, processed_dir, window_size)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 

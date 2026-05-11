@@ -5,6 +5,14 @@ project(BodyBasicsD2D LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(WIN32 AND NOT MSVC)
+    message(FATAL_ERROR
+        "This Kinect v2 application must be built with the Microsoft Visual C++ toolchain. "
+        "CMake selected '${CMAKE_CXX_COMPILER_ID}' instead. "
+        "Configure with a Visual Studio generator, for example: "
+        "cmake -S . -B temp -G \"Visual Studio 17 2022\" -A x64")
+endif()
+
 set(CODE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(SRC_DIR "${CODE_DIR}/src")
 set(INCLUDE_DIR "${CODE_DIR}/include")

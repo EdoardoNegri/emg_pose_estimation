@@ -1,20 +1,21 @@
 import argparse
 import csv
-import json
 import math
-import statistics
 import struct
 from bisect import bisect_right
 from pathlib import Path
 
 
+# This module owns the raw-recording -> processed-pose pipeline and also
+# contains the inverse reconstruction helpers used by visualization/evaluation.
 MAGIC = b"EP01"
 HEADER_STRUCT = struct.Struct("<4sI")
 FRAME_HEADER_STRUCT = struct.Struct("<IB")
 JOINT_STRUCT = struct.Struct("<Bhhh")
 ROOT_JOINT_ID = 0
-TARGET_FPS = 30.0
-TARGET_DELTA_US = int(round(1_000_000.0 / TARGET_FPS))
+TARGET_FPS = 60.0
+KINECT_TICKS_PER_SECOND = 10_000_000
+TARGET_DELTA_TICKS = int(round(KINECT_TICKS_PER_SECOND / TARGET_FPS))
 SKELETON_BONES = (
     (3, 2),
     (2, 20),
@@ -52,10 +53,6 @@ CONNECTED_LIMB_CHAINS = tuple(
         key=lambda chain: (chain[0], chain[1], chain[2]),
     )
 )
-LIMB_LENGTH_FALLBACK_BONES = {
-    (13, 14): (17, 18),
-    (14, 15): (18, 19),
-}
 DEFAULT_CENTERED_JOINTS = {
     0: (0.0, 0.0, 0.0),
     1: (0.0, 0.26, 0.0),
@@ -83,9 +80,19 @@ DEFAULT_CENTERED_JOINTS = {
     23: (0.76, 0.07, 0.0),
     24: (0.73, 0.01, 0.0),
 }
+FOOT_JOINT_IDS = {15, 19}
+REQUIRED_VISIBLE_JOINT_IDS = set(DEFAULT_CENTERED_JOINTS.keys()) - FOOT_JOINT_IDS
+MAX_JOINT_JUMP_M = 0.12
+DISTAL_JOINT_IDS = {7, 11, 14, 15, 18, 19, 21, 22, 23, 24}
+CORE_JOINT_IDS = {0, 1, 2, 3, 20}
+HIGH_FREQUENCY_FILTER = 0.0
+DISTAL_SMOOTHING_ALPHA = 0.8
+DISTAL_SMOOTHING_TRIGGER_M = 0.12
 
 
 def load_recording(path: Path) -> list[dict]:
+    # The binary format is a compact sequence of tracked joints per frame:
+    # [delta_time, tracked_joint_count, repeated (joint_id, x_mm, y_mm, z_mm)].
     with path.open("rb") as handle:
         header = handle.read(HEADER_STRUCT.size)
         if len(header) != HEADER_STRUCT.size:
@@ -118,12 +125,12 @@ def load_recording(path: Path) -> list[dict]:
 
 
 def accumulate_timestamps(frames: list[dict]) -> list[int]:
-    timestamps_us: list[int] = []
-    current_time_us = 0
+    timestamps: list[int] = []
+    current_time = 0
     for frame in frames:
-        current_time_us += frame["delta_time"]
-        timestamps_us.append(current_time_us)
-    return timestamps_us
+        current_time += frame["delta_time"]
+        timestamps.append(current_time)
+    return timestamps
 
 
 def interpolate_joint(
@@ -138,19 +145,21 @@ def interpolate_joint(
     )
 
 
-def resample_frames(frames: list[dict], target_delta_us: int = TARGET_DELTA_US) -> list[dict]:
+def resample_frames(frames: list[dict], target_delta_ticks: int = TARGET_DELTA_TICKS) -> list[dict]:
+    # Resample the irregular Kinect capture times onto a fixed-rate timeline so
+    # later stages can assume a stable FPS.
     if not frames:
         return []
 
-    timestamps_us = accumulate_timestamps(frames)
-    total_duration_us = timestamps_us[-1]
-    sample_times_us = list(range(0, total_duration_us + 1, target_delta_us))
-    if not sample_times_us:
-        sample_times_us = [0]
+    timestamps = accumulate_timestamps(frames)
+    total_duration = timestamps[-1]
+    sample_times = list(range(0, total_duration + 1, target_delta_ticks))
+    if not sample_times:
+        sample_times = [0]
 
     resampled_frames: list[dict] = []
-    for sample_time_us in sample_times_us:
-        right_index = bisect_right(timestamps_us, sample_time_us)
+    for sample_time in sample_times:
+        right_index = bisect_right(timestamps, sample_time)
         if right_index <= 0:
             left_index = right_frame_index = 0
         elif right_index >= len(frames):
@@ -161,13 +170,13 @@ def resample_frames(frames: list[dict], target_delta_us: int = TARGET_DELTA_US) 
 
         left_frame = frames[left_index]
         right_frame = frames[right_frame_index]
-        left_time_us = timestamps_us[left_index]
-        right_time_us = timestamps_us[right_frame_index]
+        left_time = timestamps[left_index]
+        right_time = timestamps[right_frame_index]
 
-        if right_frame_index == left_index or right_time_us == left_time_us:
+        if right_frame_index == left_index or right_time == left_time:
             alpha = 0.0
         else:
-            alpha = (sample_time_us - left_time_us) / (right_time_us - left_time_us)
+            alpha = (sample_time - left_time) / (right_time - left_time)
 
         if right_frame_index == left_index:
             interpolated_joints = dict(left_frame["joints"])
@@ -183,8 +192,8 @@ def resample_frames(frames: list[dict], target_delta_us: int = TARGET_DELTA_US) 
 
         resampled_frames.append(
             {
-                "delta_time": 0 if not resampled_frames else target_delta_us,
-                "timestamp_us": sample_time_us,
+                "delta_time": 0 if not resampled_frames else target_delta_ticks,
+                "timestamp_ticks": sample_time,
                 "joints": interpolated_joints,
             }
         )
@@ -193,7 +202,13 @@ def resample_frames(frames: list[dict], target_delta_us: int = TARGET_DELTA_US) 
 
 
 def normalize_root_visibility(frames: list[dict]) -> list[dict]:
-    valid_indices = [index for index, frame in enumerate(frames) if ROOT_JOINT_ID in frame["joints"]]
+    # Trim away unusable start/end regions until every required non-foot joint
+    # is visible, then keep the root joint alive across short dropouts.
+    valid_indices = [
+        index
+        for index, frame in enumerate(frames)
+        if REQUIRED_VISIBLE_JOINT_IDS.issubset(frame["joints"].keys())
+    ]
     if not valid_indices:
         return []
 
@@ -214,7 +229,7 @@ def normalize_root_visibility(frames: list[dict]) -> list[dict]:
         normalized_frames.append(
             {
                 "delta_time": frame["delta_time"],
-                "timestamp_us": frame.get("timestamp_us", 0),
+                "timestamp_ticks": frame.get("timestamp_ticks", 0),
                 "joints": normalized_joints,
             }
         )
@@ -223,13 +238,15 @@ def normalize_root_visibility(frames: list[dict]) -> list[dict]:
 
 
 def interpolate_missing_joint_positions(frames: list[dict]) -> list[dict]:
+    # Fill joint gaps inside the kept clip. This prevents downstream pose
+    # conversion from treating tracking dropouts as real motion.
     if not frames:
         return []
 
     filled_frames = [
         {
             "delta_time": frame["delta_time"],
-            "timestamp_us": frame.get("timestamp_us", 0),
+            "timestamp_ticks": frame.get("timestamp_ticks", 0),
             "joints": dict(frame["joints"]),
         }
         for frame in frames
@@ -275,6 +292,8 @@ def joint_dict_from_tuple(position: tuple[float, float, float]) -> dict[str, flo
 
 
 def build_centered_frames(frames: list[dict]) -> list[dict]:
+    # Express every joint relative to the root so the representation focuses on
+    # pose rather than absolute global position in camera space.
     centered_frames: list[dict] = []
     last_centered_joints: dict[int, dict[str, float]] = {}
 
@@ -306,7 +325,54 @@ def build_centered_frames(frames: list[dict]) -> list[dict]:
     return centered_frames
 
 
+def filter_joint_flicker(
+    centered_frames: list[dict],
+    max_joint_jump_m: float = MAX_JOINT_JUMP_M,
+) -> list[dict]:
+    # Hard reject single-frame joint spikes before computing quaternions.
+    if not centered_frames:
+        return []
+
+    filtered_frames: list[dict] = [
+        {
+            "frame_index": centered_frames[0]["frame_index"],
+            "joints_centered": {
+                joint_id: dict(joint_value)
+                for joint_id, joint_value in centered_frames[0]["joints_centered"].items()
+            },
+        }
+    ]
+
+    for frame in centered_frames[1:]:
+        previous_joints = filtered_frames[-1]["joints_centered"]
+        filtered_joints: dict[str, dict[str, float]] = {}
+
+        for joint_id, joint_value in frame["joints_centered"].items():
+            previous_value = previous_joints.get(joint_id)
+            current_position = (joint_value["x"], joint_value["y"], joint_value["z"])
+
+            if previous_value is None:
+                filtered_joints[joint_id] = dict(joint_value)
+                continue
+
+            previous_position = (previous_value["x"], previous_value["y"], previous_value["z"])
+            if joint_distance(current_position, previous_position) > max_joint_jump_m:
+                filtered_joints[joint_id] = dict(previous_value)
+            else:
+                filtered_joints[joint_id] = dict(joint_value)
+
+        filtered_frames.append(
+            {
+                "frame_index": frame["frame_index"],
+                "joints_centered": filtered_joints,
+            }
+        )
+
+    return filtered_frames
+
+
 def preprocess_frames(centered_frames: list[dict]) -> list[dict]:
+    # Convert centered joint positions into per-chain relative rotations.
     processed: list[dict] = []
 
     for frame in centered_frames:
@@ -332,6 +398,19 @@ def subtract_vectors(joint_b: dict[str, float], joint_a: dict[str, float]) -> tu
 
 def vector_length(vector: tuple[float, float, float]) -> float:
     return math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
+
+
+def joint_distance(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> float:
+    return vector_length(
+        (
+            left[0] - right[0],
+            left[1] - right[1],
+            left[2] - right[2],
+        )
+    )
 
 
 def normalize_vector(vector: tuple[float, float, float]) -> tuple[float, float, float] | None:
@@ -399,6 +478,8 @@ def quaternion_between_vectors(
 
 
 def calculate_limb_angle_quaternions(centered_joints: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    # Each stored quaternion maps a parent limb direction onto its child limb
+    # direction, for example hip->knee onto knee->ankle.
     quaternions: dict[str, dict[str, float]] = {}
 
     for joint_a, joint_b, joint_c in CONNECTED_LIMB_CHAINS:
@@ -433,6 +514,8 @@ def negate_quaternion(quaternion: dict[str, float]) -> dict[str, float]:
 
 
 def enforce_quaternion_continuity(processed_frames: list[dict]) -> None:
+    # q and -q represent the same rotation. Keep signs temporally consistent so
+    # frame-to-frame comparisons do not see artificial flips.
     previous_quaternions: dict[str, dict[str, float]] = {}
 
     for frame in processed_frames:
@@ -499,7 +582,21 @@ def subtract_position_vectors(
     return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
 
 
+def blend_positions(
+    previous: tuple[float, float, float],
+    current: tuple[float, float, float],
+    alpha: float,
+) -> tuple[float, float, float]:
+    return (
+        alpha * current[0] + (1.0 - alpha) * previous[0],
+        alpha * current[1] + (1.0 - alpha) * previous[1],
+        alpha * current[2] + (1.0 - alpha) * previous[2],
+    )
+
+
 def load_limb_lengths_csv(path: Path) -> dict[tuple[int, int], float]:
+    # Limb lengths are treated as shared person-level metadata loaded from the
+    # dataset-level CSV rather than inferred per recording.
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         lengths: dict[tuple[int, int], float] = {}
@@ -540,17 +637,18 @@ def default_direction(joint_a: int, joint_b: int) -> tuple[float, float, float]:
 
 
 def seed_root_neighbors(lengths: dict[tuple[int, int], float]) -> dict[int, tuple[float, float, float]]:
+    # Start reconstruction with the root and the root->spine segment. Hips are
+    # reconstructed from stored rotations rather than frozen to defaults.
     positions: dict[int, tuple[float, float, float]] = {ROOT_JOINT_ID: (0.0, 0.0, 0.0)}
     for joint_a, joint_b in SKELETON_BONES:
-        if joint_a == ROOT_JOINT_ID:
-            neighbor = joint_b
-            direction = default_direction(ROOT_JOINT_ID, neighbor)
-        elif joint_b == ROOT_JOINT_ID:
-            neighbor = joint_a
-            direction = default_direction(ROOT_JOINT_ID, neighbor)
-        else:
+        # Only seed the spine joint from the root. The hip joints must be
+        # reconstructed from the hip quaternions (1-0-12 and 1-0-16), otherwise
+        # they get locked to the default pose and never follow the recording.
+        if {joint_a, joint_b} != {ROOT_JOINT_ID, 1}:
             continue
 
+        neighbor = 1
+        direction = default_direction(ROOT_JOINT_ID, neighbor)
         positions[neighbor] = scale_vector(direction, limb_length_for(lengths, joint_a, joint_b))
 
     return positions
@@ -580,10 +678,26 @@ def fill_remaining_default_positions(
                 changed = True
 
 
+def enforce_leg_side_separation(positions: dict[int, tuple[float, float, float]]) -> None:
+    # A simple post-pass that keeps reconstructed left/right legs on their
+    # expected sides when the local-angle representation becomes ambiguous.
+    for joint_id in (12, 13, 14, 15):
+        if joint_id in positions and positions[joint_id][0] > 0.0:
+            x, y, z = positions[joint_id]
+            positions[joint_id] = (-abs(x), y, z)
+
+    for joint_id in (16, 17, 18, 19):
+        if joint_id in positions and positions[joint_id][0] < 0.0:
+            x, y, z = positions[joint_id]
+            positions[joint_id] = (abs(x), y, z)
+
+
 def reconstruct_positions_from_quaternions(
     quaternions: dict[str, dict[str, float]],
     lengths: dict[tuple[int, int], float],
 ) -> dict[int, tuple[float, float, float]]:
+    # Grow the skeleton outward from known segments by rotating each parent limb
+    # into its child direction and then applying the configured bone length.
     positions = seed_root_neighbors(lengths)
 
     changed = True
@@ -611,85 +725,74 @@ def reconstruct_positions_from_quaternions(
                 changed = True
 
     fill_remaining_default_positions(positions, lengths)
+    enforce_leg_side_separation(positions)
     return positions
 
 
+def smoothing_alpha_for_joint(joint_id: int) -> float:
+    if joint_id in DISTAL_JOINT_IDS:
+        return 1.0 - ((1.0 - DISTAL_SMOOTHING_ALPHA) * HIGH_FREQUENCY_FILTER)
+    return 1.0
+
+
+def smoothing_trigger_for_joint(joint_id: int) -> float:
+    if joint_id in DISTAL_JOINT_IDS:
+        return DISTAL_SMOOTHING_TRIGGER_M / max(0.1, 1.0 + HIGH_FREQUENCY_FILTER)
+    return float("inf")
+
+
+def smooth_reconstructed_frames(frames: list[dict]) -> list[dict]:
+    # Optional conditional smoothing for reconstructed predictions. Normal
+    # motion passes through untouched; larger distal-joint spikes are blended.
+    if not frames:
+        return []
+
+    smoothed_frames = [
+        {
+            "frame_index": frames[0]["frame_index"],
+            "joints": dict(frames[0]["joints"]),
+        }
+    ]
+
+    for frame in frames[1:]:
+        previous_joints = smoothed_frames[-1]["joints"]
+        smoothed_joints: dict[int, tuple[float, float, float]] = {}
+
+        for joint_id, current_position in frame["joints"].items():
+            previous_position = previous_joints.get(joint_id)
+            if previous_position is None:
+                smoothed_joints[joint_id] = current_position
+                continue
+
+            if joint_distance(previous_position, current_position) <= smoothing_trigger_for_joint(joint_id):
+                smoothed_joints[joint_id] = current_position
+                continue
+
+            smoothed_joints[joint_id] = blend_positions(previous_position, current_position, smoothing_alpha_for_joint(joint_id))
+
+        smoothed_frames.append(
+            {
+                "frame_index": frame["frame_index"],
+                "joints": smoothed_joints,
+            }
+        )
+
+    return smoothed_frames
+
+
 def reconstruct_frames_from_csv(quaternion_csv_path: Path, limb_lengths_csv_path: Path) -> list[dict]:
+    # Visualization/evaluation use this inverse path: quaternion CSV + shared
+    # limb lengths -> reconstructed joint positions per frame.
     lengths = load_limb_lengths_csv(limb_lengths_csv_path)
     quaternion_frames = load_quaternion_csv(quaternion_csv_path)
-    return [
+    reconstructed_frames = [
         {
             "frame_index": frame["frame_index"],
             "joints": reconstruct_positions_from_quaternions(frame["limb_angle_quaternions"], lengths),
         }
         for frame in quaternion_frames
     ]
-
-
-def invert_processed_frame(frame: dict) -> dict[int, tuple[float, float, float]]:
-    root = frame["root_position"]
-    absolute_joints: dict[int, tuple[float, float, float]] = {}
-    for joint_id, joint_value in frame["joints_centered"].items():
-        absolute_joints[int(joint_id)] = (
-            root["x"] + joint_value["x"],
-            root["y"] + joint_value["y"],
-            root["z"] + joint_value["z"],
-        )
-    return absolute_joints
-
-
-def collect_limb_length_measurements(processed_frames: list[dict]) -> dict[tuple[int, int], list[float]]:
-    measurements: dict[tuple[int, int], list[float]] = {}
-
-    for joint_a, joint_b in SKELETON_BONES:
-        lengths: list[float] = []
-
-        for frame in processed_frames:
-            joints = frame["joints_centered"]
-            joint_a_value = joints.get(str(joint_a))
-            joint_b_value = joints.get(str(joint_b))
-            if joint_a_value is None or joint_b_value is None:
-                continue
-
-            dx = joint_a_value["x"] - joint_b_value["x"]
-            dy = joint_a_value["y"] - joint_b_value["y"]
-            dz = joint_a_value["z"] - joint_b_value["z"]
-            lengths.append(math.sqrt(dx * dx + dy * dy + dz * dz))
-
-        measurements[(joint_a, joint_b)] = lengths
-
-    return measurements
-
-
-def calculate_limb_lengths(processed_frames: list[dict]) -> list[dict]:
-    limb_measurements = collect_limb_length_measurements(processed_frames)
-    limb_lengths: list[dict] = []
-
-    for joint_a, joint_b in sorted(SKELETON_BONES):
-        lengths = limb_measurements[(joint_a, joint_b)]
-        fallback_bone = LIMB_LENGTH_FALLBACK_BONES.get((joint_a, joint_b))
-        if not lengths and fallback_bone is not None:
-            lengths = limb_measurements.get(fallback_bone, [])
-
-        if not lengths:
-            limb_lengths.append(
-                {
-                    "limb_start": joint_a,
-                    "limb_end": joint_b,
-                    "median_length_mm": "",
-                }
-            )
-            continue
-
-        limb_lengths.append(
-            {
-                "limb_start": joint_a,
-                "limb_end": joint_b,
-                "median_length_mm": statistics.median(lengths) * 1000.0,
-            }
-        )
-
-    return limb_lengths
+    return smooth_reconstructed_frames(reconstructed_frames)
 
 
 def build_processed_path(recording_path: Path, processed_directory: Path) -> Path:
@@ -698,17 +801,27 @@ def build_processed_path(recording_path: Path, processed_directory: Path) -> Pat
     return processed_directory / f"processed_{sample_id}.csv"
 
 
-def build_limb_lengths_path(recording_path: Path, data_directory: Path) -> Path:
+def build_limb_lengths_path(data_directory: Path) -> Path:
+    data_directory.mkdir(parents=True, exist_ok=True)
+    return data_directory / "limb_lengths.csv"
+
+
+def resolve_existing_limb_lengths_path(recording_path: Path, processed_directory: Path) -> Path:
+    data_directory = processed_directory.parent.parent
+    preferred_path = build_limb_lengths_path(data_directory)
+    if preferred_path.exists():
+        return preferred_path
+
     sample_id = recording_path.stem.removeprefix("recording_")
-    return data_directory / f"limb_lengths_{sample_id}.csv"
+    processed_sidecar_path = processed_directory / f"limb_lengths_{sample_id}.csv"
+    if processed_sidecar_path.exists():
+        return processed_sidecar_path
 
+    legacy_path = processed_directory.parent.parent / f"limb_lengths_{recording_path.stem.removeprefix('recording_')}.csv"
+    if legacy_path.exists():
+        return legacy_path
 
-def save_json(data: object, output_path: Path) -> None:
-    if output_path.exists():
-        output_path.unlink()
-
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
+    return preferred_path
 
 
 def format_quaternion(quaternion: dict[str, float]) -> str:
@@ -716,6 +829,7 @@ def format_quaternion(quaternion: dict[str, float]) -> str:
 
 
 def save_processed_csv(processed_frames: list[dict], output_path: Path) -> None:
+    # Persist the processed pose as one quaternion column per connected chain.
     if output_path.exists():
         output_path.unlink()
 
@@ -734,28 +848,14 @@ def save_processed_csv(processed_frames: list[dict], output_path: Path) -> None:
             writer.writerow(row)
 
 
-def save_limb_lengths_csv(limb_lengths: list[dict], output_path: Path) -> None:
-    if output_path.exists():
-        output_path.unlink()
-
-    with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=("limb_start", "limb_end", "median_length_mm"))
-        writer.writeheader()
-        writer.writerows(limb_lengths)
-
-
 def print_recording_summary(frames: list[dict], processed_path: Path) -> None:
     print(f"Loaded {len(frames)} raw frames")
     if frames:
         print(
-            f"First frame delta: {frames[0]['delta_time']} us, "
+            f"First frame delta: {frames[0]['delta_time']} ticks, "
             f"tracked joints: {len(frames[0]['joints'])}"
         )
     print(f"Wrote processed output to {processed_path}")
-
-
-def print_limb_lengths_summary(limb_lengths_path: Path) -> None:
-    print(f"Wrote limb lengths to {limb_lengths_path}")
 
 
 def main() -> int:
@@ -783,15 +883,12 @@ def main() -> int:
     normalized_frames = normalize_root_visibility(resampled_frames)
     filled_frames = interpolate_missing_joint_positions(normalized_frames)
     centered_frames = build_centered_frames(filled_frames)
+    centered_frames = filter_joint_flicker(centered_frames)
     processed_frames = preprocess_frames(centered_frames)
-    limb_lengths = calculate_limb_lengths(centered_frames)
 
     processed_path = build_processed_path(recording_path, processed_directory)
-    limb_lengths_path = build_limb_lengths_path(recording_path, data_directory)
     save_processed_csv(processed_frames, processed_path)
-    save_limb_lengths_csv(limb_lengths, limb_lengths_path)
     print_recording_summary(filled_frames, processed_path)
-    print_limb_lengths_summary(limb_lengths_path)
     return 0
 
 

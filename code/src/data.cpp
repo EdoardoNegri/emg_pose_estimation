@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "BodyBasics.h"
 
+// CBodyBasics owns the live Kinect capture loop and keeps the latest tracked
+// skeleton frame available for rendering and on-demand recording.
 CBodyBasics::CBodyBasics() :
     m_pKinectSensor(NULL),
     m_pCoordinateMapper(NULL),
@@ -40,6 +42,8 @@ void CBodyBasics::Shutdown()
 
 void CBodyBasics::UpdateData()
 {
+    // Pull the newest tracked body frame from Kinect into the cached state used
+    // by both the renderer and the storage layer.
     TrackedBodyFrame trackedBody = {};
     if (!TryGetTrackedBodyFrame(m_lastFrameTime, trackedBody))
     {
@@ -53,6 +57,8 @@ void CBodyBasics::UpdateData()
 
 void CBodyBasics::RecordData()
 {
+    // Recording is explicit: we only append frames when the user asks for it
+    // and when a valid tracked body is available.
     if (!m_hasTrackedBodyFrame)
     {
         return;
@@ -68,6 +74,7 @@ bool CBodyBasics::SaveRecordedData() const
 
 LRESULT CALLBACK CBodyBasics::MessageRouter(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    // Standard Win32 thunk that maps a window handle back to the class instance.
     CBodyBasics* pThis = NULL;
 
     if (WM_NCCREATE == uMsg)
@@ -114,6 +121,8 @@ LRESULT CALLBACK CBodyBasics::DlgProc(HWND hWnd, UINT message, WPARAM wParam, LP
 
 HRESULT CBodyBasics::InitializeDefaultSensor()
 {
+    // Set up the Kinect sensor, coordinate mapper, and body-frame reader used
+    // by the rest of the application.
     HRESULT hr = GetDefaultKinectSensor(&m_pKinectSensor);
     if (FAILED(hr))
     {
@@ -154,6 +163,7 @@ HRESULT CBodyBasics::InitializeDefaultSensor()
 
 bool CBodyBasics::TryGetTrackedBodyFrame(INT64& frameTime, TrackedBodyFrame& trackedBody)
 {
+    // Scan the latest body frame and keep the first actively tracked body.
     if (!m_pBodyFrameReader)
     {
         return false;
