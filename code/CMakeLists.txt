@@ -44,19 +44,29 @@ function(resolve_bodybasics_file out_var filename)
     message(FATAL_ERROR "Required file not found under code/, code/src, or code/include: ${filename}")
 endfunction()
 
-resolve_bodybasics_file(BODYBASICS_CPP "BodyBasics.cpp" "body_basics.cpp")
+resolve_bodybasics_file(BODYBASICS_CPP "BodyBasics.cpp" "body_basics.cpp" "data.cpp")
+resolve_bodybasics_file(MAIN_CPP "main.cpp")
+resolve_bodybasics_file(TRACKING_RENDERER_CPP "tracking_renderer.cpp" "renderer.cpp")
+resolve_bodybasics_file(TRACKING_STORAGE_CPP "storage.cpp")
 resolve_bodybasics_file(BODYBASICS_H "BodyBasics.h")
 resolve_bodybasics_file(RESOURCE_H "resource.h")
 resolve_bodybasics_file(STDAFX_H "stdafx.h")
+resolve_bodybasics_file(TRACKING_RENDERER_H "tracking_renderer.h")
+resolve_bodybasics_file(TRACKING_STORAGE_H "tracking_storage.h")
 
 set(BODYBASICS_SOURCES
+    "${MAIN_CPP}"
     "${BODYBASICS_CPP}"
+    "${TRACKING_RENDERER_CPP}"
+    "${TRACKING_STORAGE_CPP}"
 )
 
 set(BODYBASICS_HEADERS
     "${BODYBASICS_H}"
     "${RESOURCE_H}"
     "${STDAFX_H}"
+    "${TRACKING_RENDERER_H}"
+    "${TRACKING_STORAGE_H}"
 )
 
 add_executable(tracking WIN32
@@ -82,6 +92,8 @@ target_compile_definitions(tracking PRIVATE
     _UNICODE
     $<$<CONFIG:Debug>:_DEBUG>
     $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
+    ENABLE_RENDERING
+    ENABLE_RECORDING
 )
 
 target_link_libraries(tracking PRIVATE
