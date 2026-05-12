@@ -42,16 +42,45 @@ SKELETON_BONES = (
     (11, 23),
     (11, 24),
 )
+
+
+def build_outward_skeleton_bones(root_joint_id: int) -> tuple[tuple[int, int], ...]:
+    adjacency: dict[int, set[int]] = {}
+    for joint_a, joint_b in SKELETON_BONES:
+        adjacency.setdefault(joint_a, set()).add(joint_b)
+        adjacency.setdefault(joint_b, set()).add(joint_a)
+
+    directed_bones: list[tuple[int, int]] = []
+    visited = {root_joint_id}
+    queue = [root_joint_id]
+    while queue:
+        joint_a = queue.pop(0)
+        for joint_b in sorted(adjacency.get(joint_a, ())):
+            if joint_b in visited:
+                continue
+            visited.add(joint_b)
+            directed_bones.append((joint_a, joint_b))
+            queue.append(joint_b)
+
+    return tuple(directed_bones)
+
+
+OUTWARD_SKELETON_BONES = build_outward_skeleton_bones(ROOT_JOINT_ID)
+ROOT_LIMB_REFERENCE_DIRECTIONS = {
+    (0, 1): (0.0, 1.0, 0.0),
+    (0, 12): (-1.0, 0.0, 0.0),
+    (0, 16): (1.0, 0.0, 0.0),
+}
+ROOT_LIMB_COLUMNS = tuple(
+    f"ROOT-{joint_a}-{joint_b}"
+    for joint_a, joint_b in OUTWARD_SKELETON_BONES
+    if joint_a == ROOT_JOINT_ID
+)
 CONNECTED_LIMB_CHAINS = tuple(
-    sorted(
-        (
-            (joint_a, joint_b, joint_c)
-            for joint_a, joint_b in SKELETON_BONES
-            for chain_start, joint_c in SKELETON_BONES
-            if joint_b == chain_start
-        ),
-        key=lambda chain: (chain[0], chain[1], chain[2]),
-    )
+    (joint_a, joint_b, joint_c)
+    for joint_a, joint_b in OUTWARD_SKELETON_BONES
+    for chain_start, joint_c in OUTWARD_SKELETON_BONES
+    if joint_b == chain_start
 )
 DEFAULT_CENTERED_JOINTS = {
     0: (0.0, 0.0, 0.0),
@@ -82,12 +111,9 @@ DEFAULT_CENTERED_JOINTS = {
 }
 FOOT_JOINT_IDS = {15, 19}
 REQUIRED_VISIBLE_JOINT_IDS = set(DEFAULT_CENTERED_JOINTS.keys()) - FOOT_JOINT_IDS
-MAX_JOINT_JUMP_M = 0.12
-DISTAL_JOINT_IDS = {7, 11, 14, 15, 18, 19, 21, 22, 23, 24}
 CORE_JOINT_IDS = {0, 1, 2, 3, 20}
-HIGH_FREQUENCY_FILTER = 0.0
-DISTAL_SMOOTHING_ALPHA = 0.8
-DISTAL_SMOOTHING_TRIGGER_M = 0.12
+MAX_JOINT_JUMP_M = 0.12
+JITTER_FILTER_EXCLUDED_JOINT_IDS = {21, 22, 23, 24}
 
 
 def load_recording(path: Path) -> list[dict]:
@@ -325,41 +351,46 @@ def build_centered_frames(frames: list[dict]) -> list[dict]:
     return centered_frames
 
 
-def filter_joint_flicker(
+def filter_joint_jitter(
     centered_frames: list[dict],
     max_joint_jump_m: float = MAX_JOINT_JUMP_M,
 ) -> list[dict]:
-    # Hard reject single-frame joint spikes before computing quaternions.
+    # Reject isolated one-frame body-joint spikes before quaternion conversion.
+    # Use original neighboring frames instead of the previous filtered frame, so
+    # a temporary tracking collapse can recover instead of freezing the limb.
+    # Hand tip/thumb joints are excluded so open/close motion is preserved.
     if not centered_frames:
         return []
 
-    filtered_frames: list[dict] = [
-        {
-            "frame_index": centered_frames[0]["frame_index"],
-            "joints_centered": {
-                joint_id: dict(joint_value)
-                for joint_id, joint_value in centered_frames[0]["joints_centered"].items()
-            },
-        }
-    ]
+    filtered_frames: list[dict] = []
 
-    for frame in centered_frames[1:]:
-        previous_joints = filtered_frames[-1]["joints_centered"]
+    for frame_index, frame in enumerate(centered_frames):
+        previous_frame = centered_frames[frame_index - 1] if frame_index > 0 else None
+        next_frame = centered_frames[frame_index + 1] if frame_index + 1 < len(centered_frames) else None
+        previous_joints = previous_frame["joints_centered"] if previous_frame is not None else {}
+        next_joints = next_frame["joints_centered"] if next_frame is not None else {}
         filtered_joints: dict[str, dict[str, float]] = {}
 
-        for joint_id, joint_value in frame["joints_centered"].items():
-            previous_value = previous_joints.get(joint_id)
-            current_position = (joint_value["x"], joint_value["y"], joint_value["z"])
-
-            if previous_value is None:
-                filtered_joints[joint_id] = dict(joint_value)
+        for joint_id_text, joint_value in frame["joints_centered"].items():
+            joint_id = int(joint_id_text)
+            previous_value = previous_joints.get(joint_id_text)
+            next_value = next_joints.get(joint_id_text)
+            if previous_value is None or next_value is None or joint_id in JITTER_FILTER_EXCLUDED_JOINT_IDS:
+                filtered_joints[joint_id_text] = dict(joint_value)
                 continue
 
+            current_position = (joint_value["x"], joint_value["y"], joint_value["z"])
             previous_position = (previous_value["x"], previous_value["y"], previous_value["z"])
-            if joint_distance(current_position, previous_position) > max_joint_jump_m:
-                filtered_joints[joint_id] = dict(previous_value)
+            next_position = (next_value["x"], next_value["y"], next_value["z"])
+            is_isolated_spike = (
+                joint_distance(current_position, previous_position) > max_joint_jump_m
+                and joint_distance(current_position, next_position) > max_joint_jump_m
+                and joint_distance(previous_position, next_position) <= max_joint_jump_m
+            )
+            if is_isolated_spike:
+                filtered_joints[joint_id_text] = dict(previous_value)
             else:
-                filtered_joints[joint_id] = dict(joint_value)
+                filtered_joints[joint_id_text] = dict(joint_value)
 
         filtered_frames.append(
             {
@@ -478,9 +509,26 @@ def quaternion_between_vectors(
 
 
 def calculate_limb_angle_quaternions(centered_joints: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
-    # Each stored quaternion maps a parent limb direction onto its child limb
-    # direction, for example hip->knee onto knee->ankle.
+    # Root-limb quaternions map a neutral body axis onto the current root limb.
+    # Other quaternions map a parent limb direction onto its child limb direction.
     quaternions: dict[str, dict[str, float]] = {}
+
+    for joint_a, joint_b in OUTWARD_SKELETON_BONES:
+        if joint_a != ROOT_JOINT_ID:
+            continue
+
+        joint_a_value = centered_joints.get(str(joint_a))
+        joint_b_value = centered_joints.get(str(joint_b))
+        if joint_a_value is None or joint_b_value is None:
+            continue
+
+        reference_direction = ROOT_LIMB_REFERENCE_DIRECTIONS[(joint_a, joint_b)]
+        current_limb = subtract_vectors(joint_b_value, joint_a_value)
+        quaternion = quaternion_between_vectors(reference_direction, current_limb)
+        if quaternion is None:
+            continue
+
+        quaternions[f"ROOT-{joint_a}-{joint_b}"] = quaternion
 
     for joint_a, joint_b, joint_c in CONNECTED_LIMB_CHAINS:
         joint_a_value = centered_joints.get(str(joint_a))
@@ -582,18 +630,6 @@ def subtract_position_vectors(
     return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
 
 
-def blend_positions(
-    previous: tuple[float, float, float],
-    current: tuple[float, float, float],
-    alpha: float,
-) -> tuple[float, float, float]:
-    return (
-        alpha * current[0] + (1.0 - alpha) * previous[0],
-        alpha * current[1] + (1.0 - alpha) * previous[1],
-        alpha * current[2] + (1.0 - alpha) * previous[2],
-    )
-
-
 def load_limb_lengths_csv(path: Path) -> dict[tuple[int, int], float]:
     # Limb lengths are treated as shared person-level metadata loaded from the
     # dataset-level CSV rather than inferred per recording.
@@ -637,19 +673,28 @@ def default_direction(joint_a: int, joint_b: int) -> tuple[float, float, float]:
 
 
 def seed_root_neighbors(lengths: dict[tuple[int, int], float]) -> dict[int, tuple[float, float, float]]:
-    # Start reconstruction with the root and the root->spine segment. Hips are
-    # reconstructed from stored rotations rather than frozen to defaults.
+    return {ROOT_JOINT_ID: (0.0, 0.0, 0.0)}
+
+
+def seed_root_neighbors_from_quaternions(
+    quaternions: dict[str, dict[str, float]],
+    lengths: dict[tuple[int, int], float],
+) -> dict[int, tuple[float, float, float]]:
+    # Root-child limbs are oriented from explicit neutral body axes:
+    # spine up, left hip left, right hip right.
     positions: dict[int, tuple[float, float, float]] = {ROOT_JOINT_ID: (0.0, 0.0, 0.0)}
-    for joint_a, joint_b in SKELETON_BONES:
-        # Only seed the spine joint from the root. The hip joints must be
-        # reconstructed from the hip quaternions (1-0-12 and 1-0-16), otherwise
-        # they get locked to the default pose and never follow the recording.
-        if {joint_a, joint_b} != {ROOT_JOINT_ID, 1}:
+    for joint_a, joint_b in OUTWARD_SKELETON_BONES:
+        if joint_a != ROOT_JOINT_ID:
             continue
 
-        neighbor = 1
-        direction = default_direction(ROOT_JOINT_ID, neighbor)
-        positions[neighbor] = scale_vector(direction, limb_length_for(lengths, joint_a, joint_b))
+        column = f"ROOT-{joint_a}-{joint_b}"
+        reference_direction = ROOT_LIMB_REFERENCE_DIRECTIONS[(joint_a, joint_b)]
+        quaternion = quaternions.get(column, {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0})
+        direction = rotate_vector(reference_direction, quaternion)
+        positions[joint_b] = add_vectors(
+            positions[joint_a],
+            scale_vector(direction, limb_length_for(lengths, joint_a, joint_b)),
+        )
 
     return positions
 
@@ -661,7 +706,7 @@ def fill_remaining_default_positions(
     changed = True
     while changed:
         changed = False
-        for joint_a, joint_b in SKELETON_BONES:
+        for joint_a, joint_b in OUTWARD_SKELETON_BONES:
             if joint_a in positions and joint_b not in positions:
                 direction = default_direction(joint_a, joint_b)
                 positions[joint_b] = add_vectors(
@@ -692,13 +737,37 @@ def enforce_leg_side_separation(positions: dict[int, tuple[float, float, float]]
             positions[joint_id] = (abs(x), y, z)
 
 
+def enforce_leg_downward_orientation(positions: dict[int, tuple[float, float, float]]) -> None:
+    # Local limb-angle reconstruction can occasionally choose the mirrored leg
+    # solution. Keep each leg branch meaningfully below its hip when that happens.
+    for hip_id, knee_id, ankle_id, foot_id in ((12, 13, 14, 15), (16, 17, 18, 19)):
+        hip_position = positions.get(hip_id)
+        knee_position = positions.get(knee_id)
+        if hip_position is None or knee_position is None:
+            continue
+
+        hip_y = hip_position[1]
+        hip_to_knee_length = joint_distance(hip_position, knee_position)
+        max_knee_y = hip_y - (0.25 * hip_to_knee_length)
+        if knee_position[1] <= max_knee_y:
+            continue
+
+        y_delta = max_knee_y - knee_position[1]
+        for joint_id in (knee_id, ankle_id, foot_id):
+            position = positions.get(joint_id)
+            if position is None:
+                continue
+            x, y, z = position
+            positions[joint_id] = (x, y + y_delta, z)
+
+
 def reconstruct_positions_from_quaternions(
     quaternions: dict[str, dict[str, float]],
     lengths: dict[tuple[int, int], float],
 ) -> dict[int, tuple[float, float, float]]:
     # Grow the skeleton outward from known segments by rotating each parent limb
     # into its child direction and then applying the configured bone length.
-    positions = seed_root_neighbors(lengths)
+    positions = seed_root_neighbors_from_quaternions(quaternions, lengths)
 
     changed = True
     while changed:
@@ -715,69 +784,10 @@ def reconstruct_positions_from_quaternions(
                 )
                 changed = True
 
-            if joint_b in positions and joint_c in positions and joint_a not in positions:
-                child_vector = subtract_position_vectors(positions[joint_c], positions[joint_b])
-                parent_direction = rotate_vector(child_vector, quaternion_conjugate(quaternion))
-                positions[joint_a] = subtract_position_vectors(
-                    positions[joint_b],
-                    scale_vector(parent_direction, limb_length_for(lengths, joint_a, joint_b)),
-                )
-                changed = True
-
     fill_remaining_default_positions(positions, lengths)
     enforce_leg_side_separation(positions)
+    enforce_leg_downward_orientation(positions)
     return positions
-
-
-def smoothing_alpha_for_joint(joint_id: int) -> float:
-    if joint_id in DISTAL_JOINT_IDS:
-        return 1.0 - ((1.0 - DISTAL_SMOOTHING_ALPHA) * HIGH_FREQUENCY_FILTER)
-    return 1.0
-
-
-def smoothing_trigger_for_joint(joint_id: int) -> float:
-    if joint_id in DISTAL_JOINT_IDS:
-        return DISTAL_SMOOTHING_TRIGGER_M / max(0.1, 1.0 + HIGH_FREQUENCY_FILTER)
-    return float("inf")
-
-
-def smooth_reconstructed_frames(frames: list[dict]) -> list[dict]:
-    # Optional conditional smoothing for reconstructed predictions. Normal
-    # motion passes through untouched; larger distal-joint spikes are blended.
-    if not frames:
-        return []
-
-    smoothed_frames = [
-        {
-            "frame_index": frames[0]["frame_index"],
-            "joints": dict(frames[0]["joints"]),
-        }
-    ]
-
-    for frame in frames[1:]:
-        previous_joints = smoothed_frames[-1]["joints"]
-        smoothed_joints: dict[int, tuple[float, float, float]] = {}
-
-        for joint_id, current_position in frame["joints"].items():
-            previous_position = previous_joints.get(joint_id)
-            if previous_position is None:
-                smoothed_joints[joint_id] = current_position
-                continue
-
-            if joint_distance(previous_position, current_position) <= smoothing_trigger_for_joint(joint_id):
-                smoothed_joints[joint_id] = current_position
-                continue
-
-            smoothed_joints[joint_id] = blend_positions(previous_position, current_position, smoothing_alpha_for_joint(joint_id))
-
-        smoothed_frames.append(
-            {
-                "frame_index": frame["frame_index"],
-                "joints": smoothed_joints,
-            }
-        )
-
-    return smoothed_frames
 
 
 def reconstruct_frames_from_csv(quaternion_csv_path: Path, limb_lengths_csv_path: Path) -> list[dict]:
@@ -792,7 +802,8 @@ def reconstruct_frames_from_csv(quaternion_csv_path: Path, limb_lengths_csv_path
         }
         for frame in quaternion_frames
     ]
-    return smooth_reconstructed_frames(reconstructed_frames)
+    # TODO: Add explicit jolt diagnostics here before reintroducing any smoothing.
+    return reconstructed_frames
 
 
 def build_processed_path(recording_path: Path, processed_directory: Path) -> Path:
@@ -833,7 +844,10 @@ def save_processed_csv(processed_frames: list[dict], output_path: Path) -> None:
     if output_path.exists():
         output_path.unlink()
 
-    limb_columns = [f"{joint_a}-{joint_b}-{joint_c}" for joint_a, joint_b, joint_c in CONNECTED_LIMB_CHAINS]
+    limb_columns = [
+        *ROOT_LIMB_COLUMNS,
+        *[f"{joint_a}-{joint_b}-{joint_c}" for joint_a, joint_b, joint_c in CONNECTED_LIMB_CHAINS],
+    ]
     fieldnames = ["frame_index", *limb_columns]
 
     with output_path.open("w", encoding="utf-8", newline="") as handle:
@@ -883,8 +897,13 @@ def main() -> int:
     normalized_frames = normalize_root_visibility(resampled_frames)
     filled_frames = interpolate_missing_joint_positions(normalized_frames)
     centered_frames = build_centered_frames(filled_frames)
-    centered_frames = filter_joint_flicker(centered_frames)
+    centered_frames = filter_joint_jitter(centered_frames)
     processed_frames = preprocess_frames(centered_frames)
+    if not processed_frames:
+        raise ValueError(
+            f"No usable frames found in {recording_path}. "
+            "The recording does not contain all required non-foot joints after resampling."
+        )
 
     processed_path = build_processed_path(recording_path, processed_directory)
     save_processed_csv(processed_frames, processed_path)

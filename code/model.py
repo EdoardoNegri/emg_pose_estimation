@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
 # This module currently serves two roles:
@@ -27,6 +28,13 @@ JOINT_IDS = tuple(range(25))
 FEATURES_PER_JOINT = 3
 QUATERNION_COMPONENTS = ("w", "x", "y", "z")
 DEFAULT_MAX_ANGLE_DEGREES = 160.0
+
+
+@dataclass(frozen=True)
+class JointLimit:
+    max_angle_degrees: float
+    min_angle_degrees: float | None = None
+    hinge_axis: tuple[float, float, float] | None = None
 
 
 def parse_quaternion(value: str) -> dict[str, float]:
@@ -90,23 +98,89 @@ def clamp_quaternion_angle(quaternion: dict[str, float], max_angle_degrees: floa
     }
 
 
-def load_joint_limits(path: Path) -> tuple[float, dict[str, float]]:
+def normalize_vector(vector: tuple[float, float, float]) -> tuple[float, float, float] | None:
+    length = math.sqrt(sum(component * component for component in vector))
+    if length <= 1e-12:
+        return None
+    return tuple(component / length for component in vector)
+
+
+def quaternion_to_axis_angle(quaternion: dict[str, float]) -> tuple[tuple[float, float, float], float]:
+    normalized = normalize_quaternion(quaternion)
+    w = max(-1.0, min(1.0, normalized["w"]))
+    angle = 2.0 * math.acos(w)
+    sin_half_angle = math.sqrt(max(0.0, 1.0 - w * w))
+    if sin_half_angle <= 1e-12:
+        return (1.0, 0.0, 0.0), 0.0
+    return (
+        normalized["x"] / sin_half_angle,
+        normalized["y"] / sin_half_angle,
+        normalized["z"] / sin_half_angle,
+    ), angle
+
+
+def quaternion_from_axis_angle(axis: tuple[float, float, float], angle: float) -> dict[str, float]:
+    normalized_axis = normalize_vector(axis)
+    if normalized_axis is None:
+        return {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+
+    half_angle = angle / 2.0
+    sin_half_angle = math.sin(half_angle)
+    return {
+        "w": math.cos(half_angle),
+        "x": normalized_axis[0] * sin_half_angle,
+        "y": normalized_axis[1] * sin_half_angle,
+        "z": normalized_axis[2] * sin_half_angle,
+    }
+
+
+def clamp_hinge_quaternion(quaternion: dict[str, float], limit: JointLimit) -> dict[str, float]:
+    if limit.hinge_axis is None or limit.min_angle_degrees is None:
+        return clamp_quaternion_angle(quaternion, limit.max_angle_degrees)
+
+    hinge_axis = normalize_vector(limit.hinge_axis)
+    if hinge_axis is None:
+        return clamp_quaternion_angle(quaternion, limit.max_angle_degrees)
+
+    axis, angle = quaternion_to_axis_angle(quaternion)
+    if angle > math.pi:
+        angle -= 2.0 * math.pi
+
+    sign = 1.0 if sum(axis[index] * hinge_axis[index] for index in range(3)) >= 0.0 else -1.0
+    signed_angle_degrees = math.degrees(angle) * sign
+    clamped_angle_degrees = max(
+        limit.min_angle_degrees,
+        min(limit.max_angle_degrees, signed_angle_degrees),
+    )
+    return normalize_quaternion(quaternion_from_axis_angle(hinge_axis, math.radians(clamped_angle_degrees)))
+
+
+def load_joint_limits(path: Path) -> tuple[JointLimit, dict[str, JointLimit]]:
     # Joint limits are keyed by chain name so prediction generation can clamp
     # each limb relation differently.
     if not path.exists():
-        return DEFAULT_MAX_ANGLE_DEGREES, {}
+        return JointLimit(DEFAULT_MAX_ANGLE_DEGREES), {}
 
-    default_limit = DEFAULT_MAX_ANGLE_DEGREES
-    chain_limits: dict[str, float] = {}
+    default_limit = JointLimit(DEFAULT_MAX_ANGLE_DEGREES)
+    chain_limits: dict[str, JointLimit] = {}
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             chain = row["chain"]
             max_angle = float(row["max_angle_degrees"])
+            min_angle_value = row.get("min_angle_degrees", "")
+            min_angle = float(min_angle_value) if min_angle_value else None
+            axis_values = (
+                row.get("hinge_axis_x", ""),
+                row.get("hinge_axis_y", ""),
+                row.get("hinge_axis_z", ""),
+            )
+            hinge_axis = tuple(float(value) for value in axis_values) if all(axis_values) else None
+            limit = JointLimit(max_angle_degrees=max_angle, min_angle_degrees=min_angle, hinge_axis=hinge_axis)
             if chain == "DEFAULT":
-                default_limit = max_angle
+                default_limit = limit
             else:
-                chain_limits[chain] = max_angle
+                chain_limits[chain] = limit
 
     return default_limit, chain_limits
 
@@ -114,11 +188,11 @@ def load_joint_limits(path: Path) -> tuple[float, dict[str, float]]:
 def clamp_chain_quaternion(
     chain: str,
     quaternion: dict[str, float],
-    default_limit: float,
-    chain_limits: dict[str, float],
+    default_limit: JointLimit,
+    chain_limits: dict[str, JointLimit],
 ) -> dict[str, float]:
-    max_angle = chain_limits.get(chain, default_limit)
-    return clamp_quaternion_angle(quaternion, max_angle)
+    limit = chain_limits.get(chain, default_limit)
+    return clamp_hinge_quaternion(quaternion, limit)
 
 
 def load_processed_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
