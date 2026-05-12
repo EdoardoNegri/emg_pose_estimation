@@ -1,0 +1,11 @@
+* text=auto
+
+*.cpp text
+*.h text
+*.py text
+*.txt text
+*.cmake text
+CMakeLists.txt text
+Makefile text
+
+*.bin binary

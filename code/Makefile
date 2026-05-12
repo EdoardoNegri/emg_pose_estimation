@@ -1,4 +1,5 @@
-BUILD_DIR := build
+CXX_APP_DIR := capture_data
+BUILD_DIR := $(CXX_APP_DIR)\build
 TEMP_DIR := temp
 POWERSHELL := powershell
 VSWHERE := C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe
@@ -10,10 +11,10 @@ MSVC_ON_PATH := $(shell "$(POWERSHELL)" -NoProfile -Command "if (Get-Command cl.
 IS_VISUAL_STUDIO_GENERATOR := $(findstring Visual Studio,$(GENERATOR))
 TARGET_EXE := tracking.exe
 PYTHON ?= python
-PREPROCESS_SCRIPT := preprocess.py
-VISUALIZE_SCRIPT := visualize.py
-MODEL_SCRIPT := model.py
-EVALUATE_SCRIPT := evaluate.py
+PREPROCESS_SCRIPT := process_data\preprocess.py
+VISUALIZE_SCRIPT := tests\visualize.py
+MODEL_SCRIPT := process_data\model.py
+EVALUATE_SCRIPT := tests\evaluate.py
 INDEX ?= 0
 
 ifdef GENERATOR
@@ -34,17 +35,17 @@ endif
 unexport MAKEFLAGS
 unexport MFLAGS
 
-.PHONY: help all configure build rebuild clean run-app run-preprocess run-visualize run-model run-evaluate
+.PHONY: help all configure build rebuild clean run-app run-preprocess run-model run-visualization run-evaluate
 
 help:
 	@echo Available targets:
-	@echo   make build              Configure and build the C++ app
+	@echo   make build              Configure and build the C++ capture app
 	@echo   make rebuild            Clean, configure, and build
 	@echo   make clean              Remove build and temp directories
 	@echo   make run-app            Run $(BUILD_DIR)\$(TARGET_EXE)
 	@echo   make run-preprocess     Run $(PREPROCESS_SCRIPT) with INDEX=$(INDEX)
-	@echo   make run-visualize      Run $(VISUALIZE_SCRIPT) with INDEX=$(INDEX)
 	@echo   make run-model          Run $(MODEL_SCRIPT) with INDEX=$(INDEX)
+	@echo   make run-visualization  Run $(VISUALIZE_SCRIPT) with INDEX=$(INDEX)
 	@echo   make run-evaluate       Evaluate prediction against raw ground truth with INDEX=$(INDEX)
 	@echo.
 	@echo Variables:
@@ -83,12 +84,11 @@ run-app:
 run-preprocess:
 	$(PYTHON) $(PREPROCESS_SCRIPT) $(INDEX)
 
-
-run-visualize:
-	$(PYTHON) $(VISUALIZE_SCRIPT) $(INDEX)
-
 run-model:
 	$(PYTHON) $(MODEL_SCRIPT) $(INDEX)
+
+run-visualization:
+	$(PYTHON) $(VISUALIZE_SCRIPT) $(INDEX)
 
 run-evaluate:
 	$(PYTHON) $(EVALUATE_SCRIPT) $(INDEX)

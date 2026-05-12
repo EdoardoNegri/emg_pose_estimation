@@ -14,67 +14,23 @@ if(WIN32 AND NOT MSVC)
 endif()
 
 set(CODE_DIR "${CMAKE_CURRENT_LIST_DIR}")
-set(SRC_DIR "${CODE_DIR}/src")
+set(CAPTURE_SRC_DIR "${CODE_DIR}/capture_data/src")
 set(INCLUDE_DIR "${CODE_DIR}/include")
-set(OUTPUT_DIR "${CMAKE_CURRENT_LIST_DIR}/build")
-
-function(resolve_bodybasics_file out_var filename)
-    set(_candidates
-        "${CODE_DIR}/${filename}"
-        "${SRC_DIR}/${filename}"
-        "${INCLUDE_DIR}/${filename}"
-    )
-
-    foreach(_candidate IN LISTS _candidates)
-        if(EXISTS "${_candidate}")
-            set(${out_var} "${_candidate}" PARENT_SCOPE)
-            return()
-        endif()
-    endforeach()
-
-    if(ARGC GREATER 2)
-        foreach(_alt IN LISTS ARGN)
-            set(_alt_candidates
-                "${CODE_DIR}/${_alt}"
-                "${SRC_DIR}/${_alt}"
-                "${INCLUDE_DIR}/${_alt}"
-            )
-
-            foreach(_candidate IN LISTS _alt_candidates)
-                if(EXISTS "${_candidate}")
-                    set(${out_var} "${_candidate}" PARENT_SCOPE)
-                    return()
-                endif()
-            endforeach()
-        endforeach()
-    endif()
-
-    message(FATAL_ERROR "Required file not found under code/, code/src, or code/include: ${filename}")
-endfunction()
-
-resolve_bodybasics_file(BODYBASICS_CPP "BodyBasics.cpp" "body_basics.cpp" "data.cpp")
-resolve_bodybasics_file(MAIN_CPP "main.cpp")
-resolve_bodybasics_file(TRACKING_RENDERER_CPP "tracking_renderer.cpp" "renderer.cpp")
-resolve_bodybasics_file(TRACKING_STORAGE_CPP "storage.cpp")
-resolve_bodybasics_file(BODYBASICS_H "BodyBasics.h")
-resolve_bodybasics_file(RESOURCE_H "resource.h")
-resolve_bodybasics_file(STDAFX_H "stdafx.h")
-resolve_bodybasics_file(TRACKING_RENDERER_H "tracking_renderer.h")
-resolve_bodybasics_file(TRACKING_STORAGE_H "tracking_storage.h")
+set(OUTPUT_DIR "${CMAKE_CURRENT_LIST_DIR}/capture_data/build")
 
 set(BODYBASICS_SOURCES
-    "${MAIN_CPP}"
-    "${BODYBASICS_CPP}"
-    "${TRACKING_RENDERER_CPP}"
-    "${TRACKING_STORAGE_CPP}"
+    "${CAPTURE_SRC_DIR}/main.cpp"
+    "${CAPTURE_SRC_DIR}/data.cpp"
+    "${CAPTURE_SRC_DIR}/renderer.cpp"
+    "${CAPTURE_SRC_DIR}/storage.cpp"
 )
 
 set(BODYBASICS_HEADERS
-    "${BODYBASICS_H}"
-    "${RESOURCE_H}"
-    "${STDAFX_H}"
-    "${TRACKING_RENDERER_H}"
-    "${TRACKING_STORAGE_H}"
+    "${INCLUDE_DIR}/BodyBasics.h"
+    "${INCLUDE_DIR}/resource.h"
+    "${INCLUDE_DIR}/stdafx.h"
+    "${INCLUDE_DIR}/tracking_renderer.h"
+    "${INCLUDE_DIR}/tracking_storage.h"
 )
 
 add_executable(tracking WIN32

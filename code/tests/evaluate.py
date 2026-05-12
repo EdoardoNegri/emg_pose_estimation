@@ -1,8 +1,11 @@
 import argparse
 import math
 from pathlib import Path
+import sys
 
-from preprocess import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from process_data.preprocess import (
+    ReconstructionDiagnostics,
     ROOT_JOINT_ID,
     SKELETON_BONES,
     interpolate_missing_joint_positions,
@@ -86,11 +89,11 @@ def evaluate_pose(ground_truth_frames: list[dict], prediction_frames: list[dict]
 
 
 def main() -> int:
-    script_directory = Path(__file__).resolve().parent
-    data_directory = script_directory / "data"
+    code_directory = Path(__file__).resolve().parent.parent
+    data_directory = code_directory / "data"
     processed_directory = data_directory / "recordings" / "processed"
 
-    parser = argparse.ArgumentParser(description="Evaluate predicted pose quaternions against raw skeletal ground truth.")
+    parser = argparse.ArgumentParser(description="Evaluate predicted normalized pose against raw skeletal ground truth.")
     parser.add_argument("sample_id", nargs="?", default="0", help="Numeric sample id, e.g. 0 or 1.")
     args = parser.parse_args()
 
@@ -99,11 +102,19 @@ def main() -> int:
     limb_lengths_path = resolve_existing_limb_lengths_path(raw_path, processed_directory)
 
     ground_truth_frames = load_raw_ground_truth_frames(raw_path)
-    prediction_frames = reconstruct_frames_from_csv(prediction_path, limb_lengths_path)
+    reconstruction_diagnostics = ReconstructionDiagnostics()
+    prediction_frames = reconstruct_frames_from_csv(
+        prediction_path,
+        limb_lengths_path,
+        diagnostics=reconstruction_diagnostics,
+    )
     metrics = evaluate_pose(ground_truth_frames, prediction_frames)
 
     for key, value in metrics.items():
         print(f"{key}: {value}")
+    print(f"leg_side_separation_fixes: {reconstruction_diagnostics.leg_side_separation_fixes}")
+    print(f"leg_downward_orientation_fixes: {reconstruction_diagnostics.leg_downward_orientation_fixes}")
+    print(f"foot_forward_orientation_fixes: {reconstruction_diagnostics.foot_forward_orientation_fixes}")
 
     return 0
 

@@ -1,101 +1,230 @@
-# EEG-EMG Limb Pose Estimation
+# EMG Pose Estimation
 
-Estimate limb position from multimodal biosignals using EEG and EMG, with Kinect skeletal tracking as ground-truth supervision.
+This project explores pose estimation from EMG signals, using Kinect-style skeletal tracking as supervision. The current code focuses on building the pose-processing side of the pipeline: raw skeletal recordings are resampled, converted into normalized limb rotations, constrained by limb lengths, and visualized against model predictions.
 
-## Overview
-This project explores whether limb pose can be predicted from electrophysiological signals recorded from a human subject.
+## Idea
 
-The model takes as input synchronized EEG and EMG data and learns to estimate limb position over time.  
-Kinect skeletal tracking is used to provide ground-truth joint positions during training and evaluation.
+The intended model input is an EMG time series. The model should learn to predict body pose over time from muscle activation patterns.
 
-## Motivation
-Inferring human movement directly from biosignals is an important problem in human-computer interaction, assistive technology, rehabilitation, and brain-computer interfaces.
+Instead of predicting raw joint positions directly, the current target representation is:
 
-EEG contains information related to motor planning and cortical activity, while EMG provides a more direct measurement of muscle activation. Combining both modalities may improve pose estimation compared with using a single signal source alone. Kinect provides a practical way to obtain approximate body joint trajectories for supervised learning. 
+- normalized limb rotation values between connected bones
+- fixed per-subject limb lengths
 
-## Problem Formulation
-Input:
-- EEG time series
-- EMG time series
+This separates pose orientation from body proportions. A prediction can be converted back into joint positions by applying the inverse reconstruction step with the stored limb lengths.
 
-Target:
-- limb or joint position from Kinect skeletal tracking
-- optionally joint velocity or joint angle
+## Current Pipeline
 
-Task:
-- supervised regression from biosignal windows to pose variables
+1. Record raw skeletal data with the C++ tracker.
+2. Preprocess the raw recording:
+   - resample to 60 FPS
+   - interpolate missing joint positions between the last known and next known values
+   - fill leading/trailing missing values from the nearest known value
+   - use a default skeleton pose only when a joint is never observed
+   - convert joint positions into ordered limb rotations normalized by `joint_limits.csv`
+   - use shared limb lengths in millimeters
+3. Run the model baseline:
+   - reads the processed normalized pose CSV
+   - clamps predicted values to `0..1`
+   - writes normalized prediction values
+4. Visualize:
+   - uses raw skeletal data as ground truth
+   - reconstructs prediction positions from predicted normalized rotations and shared limb lengths
+   - aligns both skeletons at joint `0`
 
-## Pipeline
-1. Record synchronized EEG, EMG, and Kinect data
-2. Preprocess signals
-   - EEG filtering / artifact reduction
-   - EMG rectification / envelope extraction
-   - Kinect smoothing / interpolation
-3. Align all modalities in time
-4. Segment into fixed-length windows
-5. Train a model to map biosignal windows to joint positions
-6. Evaluate prediction quality on held-out recordings
+## Data Files
 
-## Example Targets
-Depending on the experiment, the model can predict:
-- wrist position
-- elbow position
-- hand trajectory
-- joint angles
-- full upper-limb pose vector
+Important source folders:
 
-## Model Ideas
-Baseline models:
-- linear regression
-- ridge regression
-- random forest
-- MLP
+```text
+code/capture_data/src/     C++ Kinect capture application
+code/process_data/         Python preprocessing and model entrypoints
+code/process_data/filters.py
+                           Shared normalized-pose cleanup filters
+code/tests/                Visualization and evaluation helpers
+code/include/              Shared C++ headers
+code/data/                 Local generated data and tracked metadata
+```
 
-Sequence models:
-- 1D CNN
-- LSTM / GRU
+For sample `0`, the generated files are:
+
+```text
+code/data/recordings/raw/recording_0.bin
+code/data/recordings/processed/processed_0.csv
+code/data/limb_lengths.csv
+code/data/predictions/prediction_0.csv
+code/data/emg/raw/emg_0.csv
+code/data/emg/processed/emg_0.csv
+```
+
+`processed_0.csv` contains one row per frame. Columns are ordered limb chains such as:
+
+```csv
+frame_index,ROOT-0-1,ROOT-0-12,ROOT-0-16,0-1-20,0-12-13,...
+```
+
+Each limb-chain cell stores three normalized rotation-vector components:
+
+```text
+x y z
+```
+
+Each component is in `0..1`, where `0` maps to that limb's configured minimum value in `joint_limits.csv` and `1` maps to its configured maximum value. Internally, limb rotations are stored relative to a T-pose reference with palms facing down, so that pose is the `(0, 0, 0)` rotation-vector position for every limb. Reconstruction converts the normalized values back to relative quaternions and composes the T-pose reference before rebuilding joint positions.
+
+`limb_lengths.csv` stores limb lengths in millimeters:
+
+```csv
+limb_start,limb_end,length_mm
+```
+
+`prediction_0.csv` currently has the same normalized format as `processed_0.csv`.
+
+Limb-chain columns are generated by a breadth-first traversal rooted at joint `0`. `ROOT-0-1`, `ROOT-0-12`, and `ROOT-0-16` rotate neutral root directions into the current spine and hip directions. A column named `0-1-20` stores the rotation from limb `0 -> 1` to limb `1 -> 20`; there are no separate single-bone rotation columns.
+
+`code/data/joint_limits.csv` contains per-limb-chain rotation-vector component limits used to map normalized pose values back to rotations before visualization/evaluation:
+
+```csv
+chain,min_x,max_x,min_y,max_y,min_z,max_z
+```
+
+The limits are broad T-pose-relative guardrails. `(0, 0, 0)` in rotation-vector space means the T-pose reference; the min/max columns describe how far each limb can move away from that reference before normalization clamps it.
+
+EMG data is not yet connected to the model, but recordings should be stored by sample id so they can be aligned with pose recordings.
+
+Processed and predicted pose CSVs are filtered in normalized pose space to reduce tracking jolts. The filter repairs isolated spikes, applies a small conditional median repair, and limits unrealistically large one-frame jumps while preserving sustained motion.
+
+Raw EMG files should use:
+
+```text
+code/data/emg/raw/emg_0.csv
+```
+
+Recommended raw EMG schema:
+
+```csv
+timestamp_us,ch0,ch1,ch2,ch3
+0,0.0,0.0,0.0,0.0
+```
+
+Processed EMG files should use:
+
+```text
+code/data/emg/processed/emg_0.csv
+```
+
+Recommended processed EMG schema:
+
+```csv
+frame_index,ch0_mean,ch0_rms,ch0_envelope,ch1_mean,ch1_rms,ch1_envelope
+0,0.0,0.0,0.0,0.0,0.0,0.0
+```
+
+The intended training dataset maps an EMG window ending at each pose frame to the normalized pose targets in `recordings/processed/processed_ID.csv`.
+
+## Commands
+
+Run from the `code` directory:
+
+```powershell
+mingw32-make help
+mingw32-make rebuild CONFIG=Release
+mingw32-make run-app
+mingw32-make run-preprocess INDEX=0
+mingw32-make run-model INDEX=0
+mingw32-make run-visualization INDEX=0
+mingw32-make run-evaluate INDEX=0
+```
+
+These targets call:
+
+```text
+process_data/preprocess.py
+process_data/model.py
+tests/visualize.py
+tests/evaluate.py
+```
+
+To inspect the zero-reference pose directly:
+
+```powershell
+python tests\show_zero_pose.py
+```
+
+This opens a rotatable debug view of the T-pose reference using `limb_lengths.csv`. Use the arrow keys to rotate it, or add `--no-window` to print only the numeric checks.
+
+To run the assert-style zero-pose checks:
+
+```powershell
+python tests\test_zero_pose.py
+```
+
+The test verifies both coordinate spaces: internally the T-pose encodes to rotation-vector `(0, 0, 0)`, while the normalized CSV value is computed from `joint_limits.csv` as `(0 - min) / (max - min)` for each component.
+
+`run-evaluate` also prints reconstruction safety-net counts so post-reconstruction corrections are visible instead of hidden.
+
+`INDEX` selects the recording id. For example:
+
+```powershell
+mingw32-make run-preprocess INDEX=3
+```
+
+## Model Direction
+
+The current `model.py` is a deliberately small baseline around the pose representation. The intended next step is to replace that baseline with a model that consumes synchronized EMG windows and predicts the normalized pose columns in `processed_ID.csv`.
+
+Expected model shape:
+
+```text
+EMG window -> neural network -> normalized limb rotations -> inverse reconstruction -> joint positions
+```
+
+Possible model inputs:
+
+- raw EMG windows
+- rectified EMG
+- EMG envelopes
+- frequency-domain EMG features
+
+Possible models:
+
+- MLP baseline
+- 1D CNN over EMG windows
+- GRU/LSTM sequence model
 - temporal convolution network
 - transformer encoder
 
-Multimodal fusion options:
-- early fusion of EEG + EMG features
-- late fusion with separate encoders
-- modality ablation to compare EEG-only, EMG-only, and EEG+EMG
+## TODO
 
-## Evaluation
-Possible metrics:
-- mean absolute error (MAE)
-- root mean squared error (RMSE)
-- Pearson correlation
-- trajectory error over time
+- Connect processed EMG windows to the normalized pose prediction target.
+- Replace the current copied-pose prediction baseline with a trainable EMG model.
+- Validate pose reconstruction on multiple recordings after each representation change.
+- Tune jitter correction so short tracking spikes are reduced without removing hand open/close motion.
 
-Recommended comparisons:
-- EEG only
-- EMG only
-- EEG + EMG
-- previous-frame / constant-position baseline
+## Ideas
 
-## Project Structure
-src/            core code
-data/           dataset metadata or sample files
-notebooks/      exploration and visualization
-models/         saved models and configs
-scripts/        preprocessing and training scripts
-tests/          unit tests
-docs/           experiment notes and diagrams
+- Test base-relative joint limits: store a reference pose per limb, then clamp predicted motion as a positive offset away from that pose instead of using raw observed min/max rotation-vector components. This could let a natural pose have a nonzero base angle while still preventing impossible movement in the hyperextension direction.
 
-## Current Status
-This project is currently focused on:
-- building a synchronized EEG/EMG/Kinect dataset
-- defining a clean preprocessing pipeline
-- implementing baseline regression models
-- comparing single-modal vs multimodal decoding
+## Visualization
 
-## Future Work
-- predict full-body pose instead of selected joints
-- improve temporal synchronization
-- test subject-specific vs cross-subject models
-- investigate real-time decoding
+The visualizer compares:
+
+- ground truth from the raw recording
+- prediction reconstructed from normalized pose CSV plus limb lengths
+
+Playback runs at 60 FPS. Both skeletons are centered on joint `0`.
+
+Evaluation reports joint position MAE/RMSE and bone-length MAE:
+
+```powershell
+mingw32-make run-evaluate INDEX=0
+```
+
+Note: if `run-visualization` fails with a Tk/Tcl error, the Python installation is missing a working Tkinter/Tcl setup. Check with:
+
+```powershell
+python -m tkinter
+```
 
 ## Author
+
 Edo

@@ -1,12 +1,15 @@
 import argparse
 from pathlib import Path
+import sys
 import time
 import tkinter as tk
 
 # This viewer overlays ground-truth skeleton motion against reconstructed
 # prediction motion using the same shared limb-length metadata as evaluation.
-from preprocess import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from process_data.preprocess import (
     ROOT_JOINT_ID,
+    SKELETON_BONES,
     interpolate_missing_joint_positions,
     load_recording,
     normalize_root_visibility,
@@ -26,32 +29,6 @@ RENDER_FRAME_DURATION_S = 1.0 / RENDER_FPS
 GROUND_TRUTH_BONE_COLOR = "#111111"
 PREDICTION_BONE_COLOR = "#00a7ff"
 ALL_JOINT_IDS = tuple(range(25))
-SKELETON_BONES = (
-    (3, 2),
-    (2, 20),
-    (20, 1),
-    (1, 0),
-    (20, 4),
-    (4, 5),
-    (5, 6),
-    (6, 7),
-    (20, 8),
-    (8, 9),
-    (9, 10),
-    (10, 11),
-    (0, 12),
-    (12, 13),
-    (13, 14),
-    (14, 15),
-    (0, 16),
-    (16, 17),
-    (17, 18),
-    (18, 19),
-    (7, 21),
-    (7, 22),
-    (11, 23),
-    (11, 24),
-)
 JOINT_PALETTE = (
     "#e6194b",
     "#3cb44b",
@@ -87,8 +64,8 @@ def require_path(path: Path) -> Path:
     return path
 
 
-def resolve_paths(script_directory: Path, sample_id: int) -> tuple[Path, Path, Path]:
-    data_directory = script_directory / "data"
+def resolve_paths(code_directory: Path, sample_id: int) -> tuple[Path, Path, Path]:
+    data_directory = code_directory / "data"
     processed_directory = data_directory / "recordings" / "processed"
     raw_path = data_directory / "recordings" / "raw" / f"recording_{sample_id}.bin"
     prediction_path = data_directory / "predictions" / f"prediction_{sample_id}.csv"
@@ -305,21 +282,21 @@ def replay_processed(ground_truth_frames: list[dict], prediction_frames: list[di
 
 
 def main() -> int:
-    script_directory = Path(__file__).resolve().parent
+    code_directory = Path(__file__).resolve().parent.parent
 
     parser = argparse.ArgumentParser(description="Visualize ground truth and prediction overlays by sample id.")
     parser.add_argument("sample_id", type=int, help="Numeric sample id, e.g. 0 or 1.")
     args = parser.parse_args()
 
-    raw_path, prediction_path, limb_lengths_path = resolve_paths(script_directory, args.sample_id)
+    raw_path, prediction_path, limb_lengths_path = resolve_paths(code_directory, args.sample_id)
     try:
         ground_truth_frames = load_raw_ground_truth_frames(require_path(raw_path))
         prediction_frames = reconstruct_frames_from_csv(require_path(prediction_path), require_path(limb_lengths_path))
     except FileNotFoundError as error:
         print(error)
         print(f"Run these first:")
-        print(f"  python preprocess.py {args.sample_id}")
-        print(f"  python model.py {args.sample_id}")
+        print(f"  python process_data\\preprocess.py {args.sample_id}")
+        print(f"  python process_data\\model.py {args.sample_id}")
         return 1
 
     try:
