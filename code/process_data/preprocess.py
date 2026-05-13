@@ -408,10 +408,7 @@ def build_centered_frames(frames: list[dict]) -> list[dict]:
     return centered_frames
 
 
-def filter_joint_jitter(
-    centered_frames: list[dict],
-    max_joint_jump_m: float = MAX_JOINT_JUMP_M,
-) -> list[dict]:
+def filter_joint_jitter(centered_frames: list[dict], max_joint_jump_m: float = MAX_JOINT_JUMP_M) -> list[dict]:
     # Reject isolated one-frame body-joint spikes before quaternion conversion.
     # Use original neighboring frames instead of the previous filtered frame, so
     # a temporary tracking collapse can recover instead of freezing the limb.
@@ -565,9 +562,7 @@ def quaternion_between_vectors(
     }
 
 
-def calculate_absolute_limb_angle_quaternions(
-    centered_joints: dict[str, dict[str, float]],
-) -> dict[str, dict[str, float]]:
+def calculate_absolute_limb_angle_quaternions(centered_joints: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
     # Root-limb quaternions map a neutral body axis onto the current root limb.
     # Other quaternions map a parent limb direction onto its child limb direction.
     quaternions: dict[str, dict[str, float]] = {}
@@ -740,10 +735,7 @@ def denormalize_value(value: float, minimum: float, maximum: float) -> float:
     return minimum + (clamped * (maximum - minimum))
 
 
-def quaternion_to_normalized_limit_values(
-    quaternion: dict[str, float],
-    limit: JointLimit,
-) -> tuple[float, float, float]:
+def quaternion_to_normalized_limit_values(quaternion: dict[str, float], limit: JointLimit) -> tuple[float, float, float]:
     x, y, z = quaternion_to_rotation_vector_degrees(quaternion)
     return (
         normalize_value(x, limit.min_x, limit.max_x),
@@ -752,10 +744,7 @@ def quaternion_to_normalized_limit_values(
     )
 
 
-def normalized_limit_values_to_quaternion(
-    values: tuple[float, float, float],
-    limit: JointLimit,
-) -> dict[str, float]:
+def normalized_limit_values_to_quaternion(values: tuple[float, float, float], limit: JointLimit) -> dict[str, float]:
     rotation_vector = (
         denormalize_value(values[0], limit.min_x, limit.max_x),
         denormalize_value(values[1], limit.min_y, limit.max_y),
@@ -849,11 +838,7 @@ def load_limb_lengths_csv(path: Path) -> dict[tuple[int, int], float]:
         return lengths
 
 
-def parse_pose_cell(
-    column: str,
-    value: str,
-    chain_limits: dict[str, JointLimit],
-) -> dict[str, float]:
+def parse_pose_cell(column: str, value: str, chain_limits: dict[str, JointLimit]) -> dict[str, float]:
     limit = chain_limits.get(column)
     if limit is None:
         raise ValueError(f"Normalized pose column {column!r} has no joint limit entry")
@@ -890,10 +875,7 @@ def default_direction(joint_a: int, joint_b: int) -> tuple[float, float, float]:
     return subtract_position_vectors(DEFAULT_CENTERED_JOINTS[joint_b], DEFAULT_CENTERED_JOINTS[joint_a])
 
 
-def seed_root_limb_positions(
-    quaternions: dict[str, dict[str, float]],
-    lengths: dict[tuple[int, int], float],
-) -> dict[int, tuple[float, float, float]]:
+def seed_root_limb_positions(quaternions: dict[str, dict[str, float]], lengths: dict[tuple[int, int], float]) -> dict[int, tuple[float, float, float]]:
     # Root-child limbs are oriented from explicit neutral body axes:
     # spine up, left hip left, right hip right.
     positions: dict[int, tuple[float, float, float]] = {ROOT_JOINT_ID: (0.0, 0.0, 0.0)}
@@ -938,10 +920,7 @@ def fill_remaining_default_positions(
                 changed = True
 
 
-def enforce_leg_side_separation(
-    positions: dict[int, tuple[float, float, float]],
-    diagnostics: ReconstructionDiagnostics | None = None,
-) -> None:
+def enforce_leg_side_separation(positions: dict[int, tuple[float, float, float]], diagnostics: ReconstructionDiagnostics | None = None) -> None:
     # A simple post-pass that keeps reconstructed left/right legs on their
     # expected sides when the local-angle representation becomes ambiguous.
     for joint_id in (12, 13, 14, 15):
@@ -959,10 +938,7 @@ def enforce_leg_side_separation(
                 diagnostics.leg_side_separation_fixes += 1
 
 
-def enforce_leg_downward_orientation(
-    positions: dict[int, tuple[float, float, float]],
-    diagnostics: ReconstructionDiagnostics | None = None,
-) -> None:
+def enforce_leg_downward_orientation(positions: dict[int, tuple[float, float, float]], diagnostics: ReconstructionDiagnostics | None = None) -> None:
     # Local limb-angle reconstruction can occasionally choose the mirrored leg
     # solution. Keep each leg branch meaningfully below its hip when that happens.
     for hip_id, knee_id, ankle_id, foot_id in ((12, 13, 14, 15), (16, 17, 18, 19)):
@@ -988,11 +964,7 @@ def enforce_leg_downward_orientation(
             positions[joint_id] = (x, y + y_delta, z)
 
 
-def enforce_foot_forward_orientation(
-    positions: dict[int, tuple[float, float, float]],
-    lengths: dict[tuple[int, int], float],
-    diagnostics: ReconstructionDiagnostics | None = None,
-) -> None:
+def enforce_foot_forward_orientation(positions: dict[int, tuple[float, float, float]], lengths: dict[tuple[int, int], float], diagnostics: ReconstructionDiagnostics | None = None) -> None:
     # Kinect foot tracking is noisy and can flip the short ankle->foot segment
     # up/down. Keep feet mostly level with the ankle and pointing forward.
     for ankle_id, foot_id in ((14, 15), (18, 19)):
@@ -1027,11 +999,7 @@ def enforce_foot_forward_orientation(
         positions[foot_id] = corrected_position
 
 
-def reconstruct_positions_from_quaternions(
-    quaternions: dict[str, dict[str, float]],
-    lengths: dict[tuple[int, int], float],
-    diagnostics: ReconstructionDiagnostics | None = None,
-) -> dict[int, tuple[float, float, float]]:
+def reconstruct_positions_from_quaternions(quaternions: dict[str, dict[str, float]], lengths: dict[tuple[int, int], float], diagnostics: ReconstructionDiagnostics | None = None) -> dict[int, tuple[float, float, float]]:
     # Grow the skeleton outward from known segments by rotating each parent limb
     # into its child direction and then applying the configured bone length.
     positions = seed_root_limb_positions(quaternions, lengths)
@@ -1059,12 +1027,7 @@ def reconstruct_positions_from_quaternions(
     return positions
 
 
-def reconstruct_frames_from_csv(
-    pose_csv_path: Path,
-    limb_lengths_csv_path: Path,
-    joint_limits_path: Path | None = None,
-    diagnostics: ReconstructionDiagnostics | None = None,
-) -> list[dict]:
+def reconstruct_frames_from_csv(pose_csv_path: Path, limb_lengths_csv_path: Path, joint_limits_path: Path | None = None, diagnostics: ReconstructionDiagnostics | None = None) -> list[dict]:
     # Visualization/evaluation use this inverse path: normalized pose CSV +
     # shared limb lengths -> reconstructed joint positions per frame.
     lengths = load_limb_lengths_csv(limb_lengths_csv_path)
@@ -1109,11 +1072,7 @@ def resolve_existing_limb_lengths_path(recording_path: Path, processed_directory
     return preferred_path
 
 
-def save_processed_csv(
-    processed_frames: list[dict],
-    output_path: Path,
-    joint_limits_path: Path,
-) -> None:
+def save_processed_csv(processed_frames: list[dict], output_path: Path, joint_limits_path: Path) -> None:
     # Persist the processed pose as normalized 0..1 rotation-vector components
     # per connected chain. Reconstruction converts these values back to
     # quaternions through the same joint limit table.

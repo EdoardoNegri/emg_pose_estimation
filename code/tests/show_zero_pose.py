@@ -49,11 +49,7 @@ def project_front(joint: tuple[float, float, float], scale: float) -> tuple[floa
     return WINDOW_WIDTH * 0.5 + x * scale, WINDOW_HEIGHT * 0.50 - y * scale
 
 
-def rotate_joint(
-    joint: tuple[float, float, float],
-    yaw: float,
-    pitch: float,
-) -> tuple[float, float, float]:
+def rotate_joint(joint: tuple[float, float, float], yaw: float, pitch: float) -> tuple[float, float, float]:
     x, y, z = joint
 
     cos_yaw = math.cos(yaw)

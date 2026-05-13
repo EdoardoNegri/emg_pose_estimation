@@ -26,21 +26,11 @@ def format_normalized_limit_values(values: tuple[float, float, float]) -> str:
     return " ".join(f"{value:.9f}" for value in values)
 
 
-def normalized_values_distance(
-    left: tuple[float, float, float],
-    right: tuple[float, float, float],
-) -> float:
+def normalized_values_distance(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
     return math.sqrt(sum((left[index] - right[index]) ** 2 for index in range(3)))
 
 
-def filter_normalized_pose_jitter(
-    rows: list[dict[str, str]],
-    spike_jump: float = NORMALIZED_SPIKE_JUMP,
-    spike_return: float = NORMALIZED_SPIKE_RETURN,
-    median_jump: float = NORMALIZED_MEDIAN_JUMP,
-    median_window_radius: int = NORMALIZED_MEDIAN_WINDOW_RADIUS,
-    max_frame_step: float = MAX_NORMALIZED_FRAME_STEP,
-) -> list[dict[str, str]]:
+def filter_normalized_pose_jitter(rows: list[dict[str, str]], spike_jump: float = NORMALIZED_SPIKE_JUMP, spike_return: float = NORMALIZED_SPIKE_RETURN, median_jump: float = NORMALIZED_MEDIAN_JUMP, median_window_radius: int = NORMALIZED_MEDIAN_WINDOW_RADIUS, max_frame_step: float = MAX_NORMALIZED_FRAME_STEP) -> list[dict[str, str]]:
     if len(rows) < 3:
         return rows
 

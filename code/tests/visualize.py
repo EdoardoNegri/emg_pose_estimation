@@ -110,12 +110,7 @@ def color_for_joint(joint_id: int) -> str:
     return JOINT_PALETTE[joint_id % len(JOINT_PALETTE)]
 
 
-def draw_skeleton(
-    canvas: tk.Canvas,
-    joints: dict[int, tuple[float, float, float]],
-    scale: float,
-    bone_color: str,
-) -> None:
+def draw_skeleton(canvas: tk.Canvas, joints: dict[int, tuple[float, float, float]], scale: float, bone_color: str) -> None:
     projected = {
         joint_id: project_joint(position, scale)
         for joint_id, position in joints.items()

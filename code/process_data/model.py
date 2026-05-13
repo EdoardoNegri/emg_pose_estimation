@@ -51,11 +51,7 @@ def clamp_normalized_values(values: tuple[float, float, float]) -> tuple[float, 
     return tuple(max(0.0, min(1.0, value)) for value in values)
 
 
-def add_prediction_noise(
-    values: tuple[float, float, float],
-    noise_std: float,
-    random_generator: random.Random,
-) -> tuple[float, float, float]:
+def add_prediction_noise(values: tuple[float, float, float], noise_std: float, random_generator: random.Random) -> tuple[float, float, float]:
     if noise_std <= 0.0:
         return clamp_normalized_values(values)
 
@@ -71,14 +67,7 @@ def parse_pose_target(column: str, value: str, valid_columns: set[str]) -> tuple
     return clamp_normalized_values(parse_normalized_limit_values(value))
 
 
-def create_baseline_prediction(
-    sample_id: str,
-    processed_dir: Path,
-    predictions_dir: Path,
-    joint_limits_path: Path,
-    noise_std: float,
-    seed: int | None,
-) -> Path:
+def create_baseline_prediction(sample_id: str, processed_dir: Path, predictions_dir: Path, joint_limits_path: Path, noise_std: float, seed: int | None) -> Path:
     processed_path = processed_dir / f"processed_{sample_id}.csv"
     if not processed_path.exists():
         raise FileNotFoundError(

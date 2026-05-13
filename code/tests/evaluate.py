@@ -40,10 +40,7 @@ def load_raw_ground_truth_frames(path: Path) -> list[dict]:
     return frames
 
 
-def distance(
-    left: tuple[float, float, float],
-    right: tuple[float, float, float],
-) -> float:
+def distance(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
     dx = left[0] - right[0]
     dy = left[1] - right[1]
     dz = left[2] - right[2]
