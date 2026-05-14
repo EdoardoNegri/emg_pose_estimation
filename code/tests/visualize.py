@@ -5,7 +5,7 @@ import time
 import tkinter as tk
 
 # This viewer overlays ground-truth skeleton motion against reconstructed
-# prediction motion using the same shared limb-length metadata as evaluation.
+# prediction motion using the shared limb info metadata used by evaluation.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from process_data.preprocess import (
     ROOT_JOINT_ID,
@@ -15,7 +15,7 @@ from process_data.preprocess import (
     normalize_root_visibility,
     reconstruct_frames_from_csv,
     resample_frames,
-    resolve_existing_limb_lengths_path,
+    resolve_existing_limb_info_path,
 )
 
 
@@ -69,8 +69,8 @@ def resolve_paths(code_directory: Path, sample_id: int) -> tuple[Path, Path, Pat
     processed_directory = data_directory / "recordings" / "processed"
     raw_path = data_directory / "recordings" / "raw" / f"recording_{sample_id}.bin"
     prediction_path = data_directory / "predictions" / f"prediction_{sample_id}.csv"
-    limb_lengths_path = resolve_existing_limb_lengths_path(raw_path, processed_directory)
-    return raw_path, prediction_path, limb_lengths_path
+    limb_info_path = resolve_existing_limb_info_path(raw_path, processed_directory)
+    return raw_path, prediction_path, limb_info_path
 
 
 def load_raw_ground_truth_frames(path: Path) -> list[dict]:
@@ -283,10 +283,10 @@ def main() -> int:
     parser.add_argument("sample_id", type=int, help="Numeric sample id, e.g. 0 or 1.")
     args = parser.parse_args()
 
-    raw_path, prediction_path, limb_lengths_path = resolve_paths(code_directory, args.sample_id)
+    raw_path, prediction_path, limb_info_path = resolve_paths(code_directory, args.sample_id)
     try:
         ground_truth_frames = load_raw_ground_truth_frames(require_path(raw_path))
-        prediction_frames = reconstruct_frames_from_csv(require_path(prediction_path), require_path(limb_lengths_path))
+        prediction_frames = reconstruct_frames_from_csv(require_path(prediction_path), require_path(limb_info_path))
     except FileNotFoundError as error:
         print(error)
         print(f"Run these first:")

@@ -26,11 +26,11 @@ MAGIC = b"EP01"
 HEADER_STRUCT = struct.Struct("<4sI")
 FRAME_HEADER_STRUCT = struct.Struct("<IB")
 JOINT_STRUCT = struct.Struct("<Bhhh")
-ROOT_JOINT_ID = 0
+RAW_ROOT_JOINT_ID = 0
 TARGET_FPS = 60.0
 KINECT_TICKS_PER_SECOND = 10_000_000
 TARGET_DELTA_TICKS = int(round(KINECT_TICKS_PER_SECOND / TARGET_FPS))
-SKELETON_BONES = (
+RAW_SKELETON_BONES = (
     (3, 2),
     (2, 20),
     (20, 1),
@@ -58,9 +58,9 @@ SKELETON_BONES = (
 )
 
 
-def build_outward_skeleton_bones(root_joint_id: int) -> tuple[tuple[int, int], ...]:
+def build_outward_skeleton_bones(root_joint_id: int, skeleton_bones: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
     adjacency: dict[int, set[int]] = {}
-    for joint_a, joint_b in SKELETON_BONES:
+    for joint_a, joint_b in skeleton_bones:
         adjacency.setdefault(joint_a, set()).add(joint_b)
         adjacency.setdefault(joint_b, set()).add(joint_a)
 
@@ -79,11 +79,23 @@ def build_outward_skeleton_bones(root_joint_id: int) -> tuple[tuple[int, int], .
     return tuple(directed_bones)
 
 
-OUTWARD_SKELETON_BONES = build_outward_skeleton_bones(ROOT_JOINT_ID)
+RAW_OUTWARD_SKELETON_BONES = build_outward_skeleton_bones(RAW_ROOT_JOINT_ID, RAW_SKELETON_BONES)
+RAW_BFS_JOINT_ORDER = (
+    RAW_ROOT_JOINT_ID,
+    *(joint_b for _, joint_b in RAW_OUTWARD_SKELETON_BONES),
+)
+RAW_TO_BFS_JOINT_ID = {joint_id: bfs_joint_id for bfs_joint_id, joint_id in enumerate(RAW_BFS_JOINT_ORDER)}
+BFS_TO_RAW_JOINT_ID = {bfs_joint_id: joint_id for joint_id, bfs_joint_id in RAW_TO_BFS_JOINT_ID.items()}
+ROOT_JOINT_ID = RAW_TO_BFS_JOINT_ID[RAW_ROOT_JOINT_ID]
+SKELETON_BONES = tuple(
+    (RAW_TO_BFS_JOINT_ID[joint_a], RAW_TO_BFS_JOINT_ID[joint_b])
+    for joint_a, joint_b in RAW_SKELETON_BONES
+)
+OUTWARD_SKELETON_BONES = build_outward_skeleton_bones(ROOT_JOINT_ID, SKELETON_BONES)
 ROOT_LIMB_REFERENCE_DIRECTIONS = {
-    (0, 1): (0.0, 1.0, 0.0),
-    (0, 12): (-1.0, 0.0, 0.0),
-    (0, 16): (1.0, 0.0, 0.0),
+    (RAW_TO_BFS_JOINT_ID[0], RAW_TO_BFS_JOINT_ID[1]): (0.0, 1.0, 0.0),
+    (RAW_TO_BFS_JOINT_ID[0], RAW_TO_BFS_JOINT_ID[12]): (-1.0, 0.0, 0.0),
+    (RAW_TO_BFS_JOINT_ID[0], RAW_TO_BFS_JOINT_ID[16]): (1.0, 0.0, 0.0),
 }
 ROOT_LIMB_COLUMNS = tuple(
     f"ROOT-{joint_a}-{joint_b}"
@@ -96,7 +108,11 @@ CONNECTED_LIMB_CHAINS = tuple(
     for chain_start, joint_c in OUTWARD_SKELETON_BONES
     if joint_b == chain_start
 )
-DEFAULT_CENTERED_JOINTS = {
+LIMB_COLUMNS = (
+    *ROOT_LIMB_COLUMNS,
+    *[f"{joint_a}-{joint_b}-{joint_c}" for joint_a, joint_b, joint_c in CONNECTED_LIMB_CHAINS],
+)
+RAW_DEFAULT_CENTERED_JOINTS = {
     0: (0.0, 0.0, 0.0),
     1: (0.0, 0.26, 0.0),
     2: (0.0, 0.51, 0.0),
@@ -123,7 +139,11 @@ DEFAULT_CENTERED_JOINTS = {
     23: (0.76, 0.07, 0.0),
     24: (0.73, 0.01, 0.0),
 }
-T_POSE_CENTERED_JOINTS = {
+DEFAULT_CENTERED_JOINTS = {
+    RAW_TO_BFS_JOINT_ID[joint_id]: position
+    for joint_id, position in RAW_DEFAULT_CENTERED_JOINTS.items()
+}
+RAW_T_POSE_CENTERED_JOINTS = {
     0: (0.0, 0.0, 0.0),
     1: (0.0, 0.26, 0.0),
     2: (0.0, 0.51, 0.0),
@@ -150,10 +170,71 @@ T_POSE_CENTERED_JOINTS = {
     23: (0.98, 0.45, 0.0),
     24: (0.88, 0.43, 0.08),
 }
-FOOT_JOINT_IDS = {15, 19}
+T_POSE_CENTERED_JOINTS = {
+    RAW_TO_BFS_JOINT_ID[joint_id]: position
+    for joint_id, position in RAW_T_POSE_CENTERED_JOINTS.items()
+}
+FOOT_JOINT_IDS = {RAW_TO_BFS_JOINT_ID[15], RAW_TO_BFS_JOINT_ID[19]}
 REQUIRED_VISIBLE_JOINT_IDS = set(DEFAULT_CENTERED_JOINTS.keys()) - FOOT_JOINT_IDS
 MAX_JOINT_JUMP_M = 0.12
-JITTER_FILTER_EXCLUDED_JOINT_IDS = {21, 22, 23, 24}
+JITTER_FILTER_EXCLUDED_JOINT_IDS = {
+    RAW_TO_BFS_JOINT_ID[21],
+    RAW_TO_BFS_JOINT_ID[22],
+    RAW_TO_BFS_JOINT_ID[23],
+    RAW_TO_BFS_JOINT_ID[24],
+}
+LEFT_LEG_JOINT_IDS = tuple(RAW_TO_BFS_JOINT_ID[joint_id] for joint_id in (12, 13, 14, 15))
+RIGHT_LEG_JOINT_IDS = tuple(RAW_TO_BFS_JOINT_ID[joint_id] for joint_id in (16, 17, 18, 19))
+
+
+def _legacy_raw_chain_name_for_internal(chain: str) -> str:
+    parts = chain.split("-")
+    if parts[0] == "ROOT":
+        _, joint_a, joint_b = parts
+        return f"ROOT-{BFS_TO_RAW_JOINT_ID[int(joint_a)]}-{BFS_TO_RAW_JOINT_ID[int(joint_b)]}"
+    joint_a, joint_b, joint_c = (int(part) for part in parts)
+    return f"{BFS_TO_RAW_JOINT_ID[joint_a]}-{BFS_TO_RAW_JOINT_ID[joint_b]}-{BFS_TO_RAW_JOINT_ID[joint_c]}"
+
+
+LIMB_INFO_FILENAME = "limb_info.csv"
+LEGACY_STORAGE_CHAIN_TO_INTERNAL = {
+    _legacy_raw_chain_name_for_internal(chain): chain
+    for chain in LIMB_COLUMNS
+}
+LIMB_PAIR_TO_INTERNAL_CHAIN = {
+    **{
+        (min(int(joint_a), int(joint_b)), max(int(joint_a), int(joint_b))): chain
+        for chain in ROOT_LIMB_COLUMNS
+        for _, joint_a, joint_b in [chain.split("-")]
+    },
+    **{
+        (min(joint_b, joint_c), max(joint_b, joint_c)): f"{joint_a}-{joint_b}-{joint_c}"
+        for joint_a, joint_b, joint_c in CONNECTED_LIMB_CHAINS
+    },
+}
+
+
+def raw_chain_name_for_internal(chain: str) -> str:
+    # Processed pose CSVs and limb metadata are now stored using the internal
+    # BFS-based chain ids already used throughout the Python pipeline.
+    return chain
+
+
+def internal_chain_name_for_raw(chain: str) -> str:
+    if chain in LIMB_COLUMNS:
+        return chain
+
+    internal_chain = LEGACY_STORAGE_CHAIN_TO_INTERNAL.get(chain)
+    if internal_chain is None:
+        raise ValueError(f"Unknown limb chain {chain!r}")
+    return internal_chain
+
+
+def chain_name_for_limb_pair(limb_start: int, limb_end: int) -> str:
+    chain = LIMB_PAIR_TO_INTERNAL_CHAIN.get((min(limb_start, limb_end), max(limb_start, limb_end)))
+    if chain is None:
+        raise ValueError(f"No limb chain matches limb pair {limb_start}-{limb_end}")
+    return chain
 
 
 @dataclass(frozen=True)
@@ -199,7 +280,8 @@ def load_recording(path: Path) -> list[dict]:
                 if len(joint_bytes) != JOINT_STRUCT.size:
                     raise ValueError("unexpected end of file while reading joint")
 
-                joint_id, x_mm, y_mm, z_mm = JOINT_STRUCT.unpack(joint_bytes)
+                raw_joint_id, x_mm, y_mm, z_mm = JOINT_STRUCT.unpack(joint_bytes)
+                joint_id = RAW_TO_BFS_JOINT_ID[raw_joint_id]
                 joints[joint_id] = (x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0)
 
             frames.append({"delta_time": delta_time, "joints": joints})
@@ -654,13 +736,19 @@ def enforce_quaternion_continuity(processed_frames: list[dict]) -> None:
 
 def load_joint_limits(path: Path) -> dict[str, JointLimit]:
     if not path.exists():
-        raise FileNotFoundError(f"Joint limits not found: {path}")
+        raise FileNotFoundError(f"Limb info not found: {path}")
 
     chain_limits: dict[str, JointLimit] = {}
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            chain_limits[row["chain"]] = JointLimit(
+            chain_name = row.get("chain")
+            if chain_name:
+                internal_chain = internal_chain_name_for_raw(chain_name)
+            else:
+                internal_chain = chain_name_for_limb_pair(int(row["limb_start"]), int(row["limb_end"]))
+
+            chain_limits[internal_chain] = JointLimit(
                 min_x=float(row["min_x"]),
                 max_x=float(row["max_x"]),
                 min_y=float(row["min_y"]),
@@ -825,6 +913,9 @@ def subtract_position_vectors(
 def load_limb_lengths_csv(path: Path) -> dict[tuple[int, int], float]:
     # Limb lengths are treated as shared person-level metadata loaded from the
     # dataset-level CSV rather than inferred per recording.
+    if not path.exists():
+        raise FileNotFoundError(f"Limb info not found: {path}")
+
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         lengths: dict[tuple[int, int], float] = {}
@@ -833,8 +924,12 @@ def load_limb_lengths_csv(path: Path) -> dict[tuple[int, int], float]:
             if not length_value:
                 continue
 
-            lengths[(int(row["limb_start"]), int(row["limb_end"]))] = float(length_value) / 1000.0
+            joint_a = int(row["limb_start"])
+            joint_b = int(row["limb_end"])
+            lengths[(min(joint_a, joint_b), max(joint_a, joint_b))] = float(length_value) / 1000.0
 
+        if not lengths:
+            raise ValueError(f"No limb lengths found in {path}")
         return lengths
 
 
@@ -845,10 +940,10 @@ def parse_pose_cell(column: str, value: str, chain_limits: dict[str, JointLimit]
     return normalized_limit_values_to_quaternion(parse_normalized_limit_values(value), limit)
 
 
-def load_pose_csv(path: Path, joint_limits_path: Path | None = None) -> list[dict]:
-    if joint_limits_path is None:
-        joint_limits_path = Path(__file__).resolve().parent.parent / "data" / "joint_limits.csv"
-    chain_limits = load_joint_limits(joint_limits_path)
+def load_pose_csv(path: Path, limb_info_path: Path | None = None) -> list[dict]:
+    if limb_info_path is None:
+        limb_info_path = Path(__file__).resolve().parent.parent / "data" / LIMB_INFO_FILENAME
+    chain_limits = load_joint_limits(limb_info_path)
 
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -858,7 +953,7 @@ def load_pose_csv(path: Path, joint_limits_path: Path | None = None) -> list[dic
                 {
                     "frame_index": int(row["frame_index"]),
                     "limb_angle_quaternions": {
-                        column: parse_pose_cell(column, value, chain_limits)
+                        internal_chain_name_for_raw(column): parse_pose_cell(internal_chain_name_for_raw(column), value, chain_limits)
                         for column, value in row.items()
                         if column != "frame_index"
                     },
@@ -868,7 +963,7 @@ def load_pose_csv(path: Path, joint_limits_path: Path | None = None) -> list[dic
 
 
 def limb_length_for(lengths: dict[tuple[int, int], float], joint_a: int, joint_b: int) -> float:
-    return lengths.get((joint_a, joint_b), lengths.get((joint_b, joint_a), 0.1))
+    return lengths.get((min(joint_a, joint_b), max(joint_a, joint_b)), 0.1)
 
 
 def default_direction(joint_a: int, joint_b: int) -> tuple[float, float, float]:
@@ -923,14 +1018,14 @@ def fill_remaining_default_positions(
 def enforce_leg_side_separation(positions: dict[int, tuple[float, float, float]], diagnostics: ReconstructionDiagnostics | None = None) -> None:
     # A simple post-pass that keeps reconstructed left/right legs on their
     # expected sides when the local-angle representation becomes ambiguous.
-    for joint_id in (12, 13, 14, 15):
+    for joint_id in LEFT_LEG_JOINT_IDS:
         if joint_id in positions and positions[joint_id][0] > 0.0:
             x, y, z = positions[joint_id]
             positions[joint_id] = (-abs(x), y, z)
             if diagnostics is not None:
                 diagnostics.leg_side_separation_fixes += 1
 
-    for joint_id in (16, 17, 18, 19):
+    for joint_id in RIGHT_LEG_JOINT_IDS:
         if joint_id in positions and positions[joint_id][0] < 0.0:
             x, y, z = positions[joint_id]
             positions[joint_id] = (abs(x), y, z)
@@ -941,7 +1036,7 @@ def enforce_leg_side_separation(positions: dict[int, tuple[float, float, float]]
 def enforce_leg_downward_orientation(positions: dict[int, tuple[float, float, float]], diagnostics: ReconstructionDiagnostics | None = None) -> None:
     # Local limb-angle reconstruction can occasionally choose the mirrored leg
     # solution. Keep each leg branch meaningfully below its hip when that happens.
-    for hip_id, knee_id, ankle_id, foot_id in ((12, 13, 14, 15), (16, 17, 18, 19)):
+    for hip_id, knee_id, ankle_id, foot_id in (LEFT_LEG_JOINT_IDS, RIGHT_LEG_JOINT_IDS):
         hip_position = positions.get(hip_id)
         knee_position = positions.get(knee_id)
         if hip_position is None or knee_position is None:
@@ -967,7 +1062,7 @@ def enforce_leg_downward_orientation(positions: dict[int, tuple[float, float, fl
 def enforce_foot_forward_orientation(positions: dict[int, tuple[float, float, float]], lengths: dict[tuple[int, int], float], diagnostics: ReconstructionDiagnostics | None = None) -> None:
     # Kinect foot tracking is noisy and can flip the short ankle->foot segment
     # up/down. Keep feet mostly level with the ankle and pointing forward.
-    for ankle_id, foot_id in ((14, 15), (18, 19)):
+    for ankle_id, foot_id in ((LEFT_LEG_JOINT_IDS[2], LEFT_LEG_JOINT_IDS[3]), (RIGHT_LEG_JOINT_IDS[2], RIGHT_LEG_JOINT_IDS[3])):
         ankle_position = positions.get(ankle_id)
         foot_position = positions.get(foot_id)
         if ankle_position is None or foot_position is None:
@@ -1027,11 +1122,11 @@ def reconstruct_positions_from_quaternions(quaternions: dict[str, dict[str, floa
     return positions
 
 
-def reconstruct_frames_from_csv(pose_csv_path: Path, limb_lengths_csv_path: Path, joint_limits_path: Path | None = None, diagnostics: ReconstructionDiagnostics | None = None) -> list[dict]:
+def reconstruct_frames_from_csv(pose_csv_path: Path, limb_info_path: Path, joint_limits_path: Path | None = None, diagnostics: ReconstructionDiagnostics | None = None) -> list[dict]:
     # Visualization/evaluation use this inverse path: normalized pose CSV +
-    # shared limb lengths -> reconstructed joint positions per frame.
-    lengths = load_limb_lengths_csv(limb_lengths_csv_path)
-    pose_frames = load_pose_csv(pose_csv_path, joint_limits_path)
+    # shared limb info -> reconstructed joint positions per frame.
+    lengths = load_limb_lengths_csv(limb_info_path)
+    pose_frames = load_pose_csv(pose_csv_path, joint_limits_path or limb_info_path)
     reconstructed_frames = [
         {
             "frame_index": frame["frame_index"],
@@ -1049,42 +1144,26 @@ def build_processed_path(recording_path: Path, processed_directory: Path) -> Pat
     return processed_directory / f"processed_{sample_id}.csv"
 
 
-def build_limb_lengths_path(data_directory: Path) -> Path:
+def build_limb_info_path(data_directory: Path) -> Path:
     data_directory.mkdir(parents=True, exist_ok=True)
-    return data_directory / "limb_lengths.csv"
+    return data_directory / LIMB_INFO_FILENAME
 
 
-def resolve_existing_limb_lengths_path(recording_path: Path, processed_directory: Path) -> Path:
+def resolve_existing_limb_info_path(recording_path: Path, processed_directory: Path) -> Path:
     data_directory = processed_directory.parent.parent
-    preferred_path = build_limb_lengths_path(data_directory)
-    if preferred_path.exists():
-        return preferred_path
-
-    sample_id = recording_path.stem.removeprefix("recording_")
-    processed_sidecar_path = processed_directory / f"limb_lengths_{sample_id}.csv"
-    if processed_sidecar_path.exists():
-        return processed_sidecar_path
-
-    legacy_path = processed_directory.parent.parent / f"limb_lengths_{recording_path.stem.removeprefix('recording_')}.csv"
-    if legacy_path.exists():
-        return legacy_path
-
-    return preferred_path
+    return build_limb_info_path(data_directory)
 
 
-def save_processed_csv(processed_frames: list[dict], output_path: Path, joint_limits_path: Path) -> None:
+def save_processed_csv(processed_frames: list[dict], output_path: Path, limb_info_path: Path) -> None:
     # Persist the processed pose as normalized 0..1 rotation-vector components
     # per connected chain. Reconstruction converts these values back to
     # quaternions through the same joint limit table.
     if output_path.exists():
         output_path.unlink()
 
-    chain_limits = load_joint_limits(joint_limits_path)
-    limb_columns = [
-        *ROOT_LIMB_COLUMNS,
-        *[f"{joint_a}-{joint_b}-{joint_c}" for joint_a, joint_b, joint_c in CONNECTED_LIMB_CHAINS],
-    ]
-    fieldnames = ["frame_index", *limb_columns]
+    chain_limits = load_joint_limits(limb_info_path)
+    limb_columns = list(LIMB_COLUMNS)
+    fieldnames = ["frame_index", *(raw_chain_name_for_internal(column) for column in limb_columns)]
 
     rows: list[dict[str, str]] = []
     for frame in processed_frames:
@@ -1093,9 +1172,9 @@ def save_processed_csv(processed_frames: list[dict], output_path: Path, joint_li
         for column in limb_columns:
             limit = chain_limits.get(column)
             if limit is None:
-                raise ValueError(f"Pose column {column!r} has no entry in joint_limits.csv")
+                raise ValueError(f"Pose column {column!r} has no entry in {LIMB_INFO_FILENAME}")
 
-            row[column] = format_normalized_limit_values(
+            row[raw_chain_name_for_internal(column)] = format_normalized_limit_values(
                 quaternion_to_normalized_limit_values(quaternions[column], limit)
             )
         rows.append(row)
@@ -1131,7 +1210,7 @@ def main() -> int:
         default="0",
         help="Raw recording path or numeric sample id like 0, 1, 2",
     )
-    parser.add_argument("--joint-limits", default=str(data_directory / "joint_limits.csv"))
+    parser.add_argument("--limb-info", default=str(build_limb_info_path(data_directory)))
     args = parser.parse_args()
 
     if args.recording.isdigit():
@@ -1153,7 +1232,7 @@ def main() -> int:
         )
 
     processed_path = build_processed_path(recording_path, processed_directory)
-    save_processed_csv(processed_frames, processed_path, Path(args.joint_limits))
+    save_processed_csv(processed_frames, processed_path, Path(args.limb_info))
     print_recording_summary(filled_frames, processed_path)
     return 0
 

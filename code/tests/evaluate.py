@@ -12,7 +12,7 @@ from process_data.preprocess import (
     load_recording,
     normalize_root_visibility,
     reconstruct_frames_from_csv,
-    resolve_existing_limb_lengths_path,
+    resolve_existing_limb_info_path,
     resample_frames,
 )
 
@@ -96,13 +96,13 @@ def main() -> int:
 
     raw_path = data_directory / "recordings" / "raw" / f"recording_{args.sample_id}.bin"
     prediction_path = data_directory / "predictions" / f"prediction_{args.sample_id}.csv"
-    limb_lengths_path = resolve_existing_limb_lengths_path(raw_path, processed_directory)
+    limb_info_path = resolve_existing_limb_info_path(raw_path, processed_directory)
 
     ground_truth_frames = load_raw_ground_truth_frames(raw_path)
     reconstruction_diagnostics = ReconstructionDiagnostics()
     prediction_frames = reconstruct_frames_from_csv(
         prediction_path,
-        limb_lengths_path,
+        limb_info_path,
         diagnostics=reconstruction_diagnostics,
     )
     metrics = evaluate_pose(ground_truth_frames, prediction_frames)

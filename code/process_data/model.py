@@ -11,21 +11,36 @@ try:
         format_normalized_limit_values,
         parse_normalized_limit_values,
     )
+    from process_data.preprocess import (
+        LIMB_INFO_FILENAME,
+        chain_name_for_limb_pair,
+        internal_chain_name_for_raw,
+    )
 except ModuleNotFoundError:
     from filters import (
         filter_normalized_pose_jitter,
         format_normalized_limit_values,
         parse_normalized_limit_values,
     )
+    from preprocess import (
+        LIMB_INFO_FILENAME,
+        chain_name_for_limb_pair,
+        internal_chain_name_for_raw,
+    )
 
 
-def load_joint_limit_chains(path: Path) -> set[str]:
+def load_limb_info_chains(path: Path) -> set[str]:
     if not path.exists():
-        raise FileNotFoundError(f"Joint limits not found: {path}")
+        raise FileNotFoundError(f"Limb info not found: {path}")
 
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        return {row["chain"] for row in reader}
+        return {
+            internal_chain_name_for_raw(row["chain"])
+            if row.get("chain")
+            else chain_name_for_limb_pair(int(row["limb_start"]), int(row["limb_end"]))
+            for row in reader
+        }
 
 
 def load_processed_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -62,12 +77,12 @@ def add_prediction_noise(values: tuple[float, float, float], noise_std: float, r
 
 def parse_pose_target(column: str, value: str, valid_columns: set[str]) -> tuple[float, float, float]:
     if column not in valid_columns:
-        raise ValueError(f"Pose column {column!r} has no entry in joint_limits.csv")
+        raise ValueError(f"Pose column {column!r} has no entry in {LIMB_INFO_FILENAME}")
 
     return clamp_normalized_values(parse_normalized_limit_values(value))
 
 
-def create_baseline_prediction(sample_id: str, processed_dir: Path, predictions_dir: Path, joint_limits_path: Path, noise_std: float, seed: int | None) -> Path:
+def create_baseline_prediction(sample_id: str, processed_dir: Path, predictions_dir: Path, limb_info_path: Path, noise_std: float, seed: int | None) -> Path:
     processed_path = processed_dir / f"processed_{sample_id}.csv"
     if not processed_path.exists():
         raise FileNotFoundError(
@@ -75,7 +90,7 @@ def create_baseline_prediction(sample_id: str, processed_dir: Path, predictions_
             f"Run preprocess.py {sample_id} first."
         )
 
-    valid_columns = load_joint_limit_chains(joint_limits_path)
+    valid_columns = load_limb_info_chains(limb_info_path)
     fieldnames, rows = load_processed_csv(processed_path)
     random_generator = random.Random(seed)
     prediction_rows: list[dict[str, str]] = []
@@ -112,7 +127,7 @@ def main() -> int:
     )
     parser.add_argument("--processed-dir", default=str(data_directory / "recordings" / "processed"))
     parser.add_argument("--predictions-dir", default=str(data_directory / "predictions"))
-    parser.add_argument("--joint-limits", default=str(data_directory / "joint_limits.csv"))
+    parser.add_argument("--limb-info", default=str(data_directory / LIMB_INFO_FILENAME))
     parser.add_argument("--noise-std", type=float, default=0.0, help="Noise standard deviation in normalized 0..1 pose space.")
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for reproducible baseline predictions.")
     args = parser.parse_args()
@@ -121,7 +136,7 @@ def main() -> int:
         sample_id=args.sample_id,
         processed_dir=Path(args.processed_dir),
         predictions_dir=Path(args.predictions_dir),
-        joint_limits_path=Path(args.joint_limits),
+        limb_info_path=Path(args.limb_info),
         noise_std=args.noise_std,
         seed=args.seed,
     )

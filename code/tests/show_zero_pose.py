@@ -165,8 +165,7 @@ def main() -> int:
     data_directory = code_directory / "data"
 
     parser = argparse.ArgumentParser(description="Print and save the T-pose zero-rotation reference.")
-    parser.add_argument("--joint-limits", default=str(data_directory / "joint_limits.csv"))
-    parser.add_argument("--limb-lengths", default=str(data_directory / "limb_lengths.csv"))
+    parser.add_argument("--limb-info", default=str(data_directory / "limb_info.csv"))
     parser.add_argument("--output", default=str(data_directory / "tests" / "zero_pose.csv"))
     parser.add_argument("--no-window", action="store_true", help="Only print/write the zero pose; do not open Tkinter.")
     args = parser.parse_args()
@@ -176,8 +175,9 @@ def main() -> int:
         for joint_id, position in T_POSE_CENTERED_JOINTS.items()
     }
     quaternions = calculate_limb_angle_quaternions(centered_joints)
-    chain_limits = load_joint_limits(Path(args.joint_limits))
-    limb_lengths = load_limb_lengths_csv(Path(args.limb_lengths))
+    limb_info_path = Path(args.limb_info)
+    chain_limits = load_joint_limits(limb_info_path)
+    limb_lengths = load_limb_lengths_csv(limb_info_path)
 
     max_zero_error = 0.0
     print("Internal rotation-vector degrees for T-pose with palms down:")
@@ -190,7 +190,7 @@ def main() -> int:
     print(f"max absolute zero error: {max_zero_error:.12f} degrees")
 
     print()
-    print("Normalized T-pose values from joint_limits.csv:")
+    print("Normalized T-pose values from limb_info.csv:")
     for column in chain_columns():
         limit = chain_limits[column]
         expected_values = (

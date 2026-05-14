@@ -1,5 +1,7 @@
 CXX_APP_DIR := capture_data
 BUILD_DIR := $(CXX_APP_DIR)\build
+RUN_APP_DIR := run_data
+RUN_BUILD_DIR := $(RUN_APP_DIR)\build
 TEMP_DIR := temp
 POWERSHELL := powershell
 VSWHERE := C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe
@@ -10,6 +12,7 @@ PLATFORM ?= x64
 MSVC_ON_PATH := $(shell "$(POWERSHELL)" -NoProfile -Command "if (Get-Command cl.exe -ErrorAction SilentlyContinue) { 'yes' }")
 IS_VISUAL_STUDIO_GENERATOR := $(findstring Visual Studio,$(GENERATOR))
 TARGET_EXE := tracking.exe
+RUN_TARGET_EXE := run_data_app.exe
 PYTHON ?= python
 PREPROCESS_SCRIPT := process_data\preprocess.py
 VISUALIZE_SCRIPT := tests\visualize.py
@@ -35,14 +38,15 @@ endif
 unexport MAKEFLAGS
 unexport MFLAGS
 
-.PHONY: help all configure build rebuild clean run-app run-preprocess run-model run-visualization run-evaluate
+.PHONY: help all configure build rebuild clean run-app run-capture run-preprocess run-model run-visualization run-evaluate
 
 help:
 	@echo Available targets:
 	@echo   make build              Configure and build the C++ capture app
 	@echo   make rebuild            Clean, configure, and build
 	@echo   make clean              Remove build and temp directories
-	@echo   make run-app            Run $(BUILD_DIR)\$(TARGET_EXE)
+	@echo   make run-capture        Run $(BUILD_DIR)\$(TARGET_EXE)
+	@echo   make run-app            Run $(RUN_BUILD_DIR)\$(RUN_TARGET_EXE)
 	@echo   make run-preprocess     Run $(PREPROCESS_SCRIPT) with INDEX=$(INDEX)
 	@echo   make run-model          Run $(MODEL_SCRIPT) with INDEX=$(INDEX)
 	@echo   make run-visualization  Run $(VISUALIZE_SCRIPT) with INDEX=$(INDEX)
@@ -76,10 +80,14 @@ rebuild: clean build
 
 clean:
 	@if exist "$(BUILD_DIR)" rmdir /S /Q "$(BUILD_DIR)"
+	@if exist "$(RUN_BUILD_DIR)" rmdir /S /Q "$(RUN_BUILD_DIR)"
 	@if exist "$(TEMP_DIR)" rmdir /S /Q "$(TEMP_DIR)"
 
-run-app:
+run-capture:
 	$(BUILD_DIR)\$(TARGET_EXE)
+
+run-app:
+	$(RUN_BUILD_DIR)\$(RUN_TARGET_EXE)
 
 run-preprocess:
 	$(PYTHON) $(PREPROCESS_SCRIPT) $(INDEX)

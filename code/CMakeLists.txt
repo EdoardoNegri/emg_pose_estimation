@@ -15,8 +15,11 @@ endif()
 
 set(CODE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(CAPTURE_SRC_DIR "${CODE_DIR}/capture_data/src")
+set(RUN_SRC_DIR "${CODE_DIR}/run_data/src")
+set(RUN_INCLUDE_DIR "${CODE_DIR}/run_data/include")
 set(INCLUDE_DIR "${CODE_DIR}/include")
 set(OUTPUT_DIR "${CMAKE_CURRENT_LIST_DIR}/capture_data/build")
+set(RUN_OUTPUT_DIR "${CMAKE_CURRENT_LIST_DIR}/run_data/build")
 
 set(BODYBASICS_SOURCES
     "${CAPTURE_SRC_DIR}/main.cpp"
@@ -82,4 +85,30 @@ set_target_properties(tracking PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${OUTPUT_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${OUTPUT_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${OUTPUT_DIR}"
+)
+
+set(RUN_DATA_SOURCES
+    "${RUN_SRC_DIR}/main.cpp"
+    "${RUN_SRC_DIR}/emg_capture.cpp"
+    "${RUN_SRC_DIR}/process.cpp"
+    "${RUN_SRC_DIR}/run_model.cpp"
+    "${RUN_SRC_DIR}/visualize.cpp"
+)
+
+add_executable(run_data_app
+    ${RUN_DATA_SOURCES}
+)
+
+target_include_directories(run_data_app PRIVATE
+    "${RUN_INCLUDE_DIR}"
+    "${INCLUDE_DIR}"
+    "${CODE_DIR}"
+)
+
+set_target_properties(run_data_app PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${RUN_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${RUN_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${RUN_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${RUN_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${RUN_OUTPUT_DIR}"
 )
